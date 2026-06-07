@@ -444,6 +444,10 @@ const _supaClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   db: { schema: 'public' },
 });
 
+// ── مفتاح Anthropic — يُحمَّل بأمان من Supabase (clinic_settings) بعد تسجيل الدخول ──
+// لا يُكتب المفتاح في الكود إطلاقاً (يمنع كشفه في المصدر العام وسرقته).
+window.ANTHROPIC_API_KEY = localStorage.getItem('mc_api_key') || '';
+
 // ── REST helper (يستخدم الـ SDK الرسمي) ──
 const sb = {
   // جلب جميع السجلات من جدول (بما فيها شواهد الحذف deleted=true ليتمكن السحب من إزالتها محلياً)
@@ -7403,12 +7407,10 @@ async function loadApiKeyFromSupabase() {
       localStorage.setItem('mc_api_key', data.value);
       console.log('✅ API Key loaded from Supabase');
     } else {
-      // Fallback to localStorage if not found in Supabase
       window.ANTHROPIC_API_KEY = localStorage.getItem('mc_api_key') || '';
       console.warn('⚠️ API Key not found in Supabase, using cached key');
     }
   } catch(e) {
-    // Fallback to localStorage if offline
     window.ANTHROPIC_API_KEY = localStorage.getItem('mc_api_key') || '';
     console.warn('⚠️ Could not reach Supabase, using cached API Key');
   }
