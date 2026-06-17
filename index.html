@@ -11,7 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800;900&family=Tajawal:wght@300;400;500;700;800&display=swap" rel="stylesheet"/>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -431,7 +431,8 @@ select.input{cursor:pointer;}
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel">
+<script type="text/babel" data-presets="react">
+/* @jsxRuntime classic */
 // ══════════════════════════════════════════════════
 // SUPABASE CONFIG — Realtime v2
 // ══════════════════════════════════════════════════
@@ -4026,12 +4027,16 @@ function CalendarPage(){
   const monthNames = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
 
   const statusColors = {confirmed:'var(--green)',pending:'var(--accent)',completed:'var(--blue)',cancelled:'var(--red)',missed:'#6b7280'};
+  // — لون ثابت مميّز لكل طبيب/معالج (يسهّل قراءة التقويم) —
+  const DOC_PALETTE = ['#2563eb','#059669','#d97706','#db2777','#7c3aed','#0891b2','#ca8a04','#dc2626','#4f46e5','#15803d','#9333ea','#0d9488'];
+  const therapistColor = (name) => { const s=String(name||'غير محدد'); let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return DOC_PALETTE[h%DOC_PALETTE.length]; };
+  const therapists = [...new Set(appointments.map(a=>a.therapist||'غير محدد').filter(Boolean))];
 
   // — أيام الأسبوع الحالي (يبدأ بالأحد) —
   const weekStart = new Date(weekRef); weekStart.setDate(weekRef.getDate()-weekRef.getDay()); weekStart.setHours(0,0,0,0);
   const weekDays = Array(7).fill(null).map((_,i)=>{ const d=new Date(weekStart); d.setDate(weekStart.getDate()+i); return d; });
   const fmtDay = (d)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const hours = []; for(let h=8;h<=20;h++) hours.push(h);
+  const hours = []; for(let h=8;h<=21;h++) hours.push(h);
 
   return(
     <div className="page-content">
@@ -4045,6 +4050,16 @@ function CalendarPage(){
           <button className="btn btn-accent" onClick={()=>setModal({type:'apt',data:null})}>+ موعد جديد</button>
         </div>
       </div>
+      {therapists.length>0 && (
+        <div style={{display:'flex',flexWrap:'wrap',gap:12,alignItems:'center',padding:'9px 14px',marginBottom:12,background:'var(--surface)',borderRadius:10,fontSize:12.5}}>
+          <span style={{fontWeight:800,color:'var(--text-mid)'}}>👨‍⚕️ الأطباء:</span>
+          {therapists.map(t=>(
+            <span key={t} style={{display:'inline-flex',alignItems:'center',gap:6,fontWeight:700,color:'var(--text-mid)'}}>
+              <span style={{width:13,height:13,borderRadius:4,background:therapistColor(t)}}/>{t}
+            </span>
+          ))}
+        </div>
+      )}
       {view==='week' && (
         <div className="card">
           <div className="card-header">
@@ -4069,13 +4084,14 @@ function CalendarPage(){
                     const ds=fmtDay(d);
                     const cellApts=appointments.filter(a=>a.date===ds && parseInt((a.time||'0').split(':')[0],10)===h);
                     return <div key={di} style={{minHeight:46,border:'1px solid var(--border)',borderRadius:6,padding:2}}>
-                      {cellApts.map(a=>(
+                      {cellApts.map(a=>{ const dc=therapistColor(a.therapist||'غير محدد'); return (
                         <div key={a.id} style={{fontSize:10,padding:'2px 4px',borderRadius:4,marginBottom:2,cursor:'pointer',
-                          background:statusColors[a.status]+'22',color:statusColors[a.status],fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
-                          title={`${a.time} ${a.patientName}`} onClick={()=>setModal({type:'apt',data:a})}>
+                          background:dc+'22',color:dc,fontWeight:700,borderRight:`3px solid ${dc}`,borderLeft:`3px solid ${statusColors[a.status]}`,
+                          overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
+                          title={`${a.time} — ${a.patientName} — د. ${a.therapist||'غير محدد'} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
                           {a.time} {a.patientName}
                         </div>
-                      ))}
+                      ); })}
                     </div>;
                   })}
                 </React.Fragment>
@@ -4109,15 +4125,15 @@ function CalendarPage(){
                   borderColor:isToday?'var(--primary)':'var(--border)',
                 }}>
                   <div style={{fontSize:13,fontWeight:isToday?900:600,color:isToday?'var(--primary)':'var(--text-mid)',marginBottom:4}}>{day}</div>
-                  {dayApts.map(a=>(
+                  {dayApts.map(a=>{ const dc=therapistColor(a.therapist||'غير محدد'); return (
                     <div key={a.id} style={{
                       fontSize:10.5,padding:'2px 5px',borderRadius:4,marginBottom:2,
-                      background:statusColors[a.status]+'22',color:statusColors[a.status],fontWeight:700,
+                      background:dc+'22',color:dc,fontWeight:700,borderRight:`3px solid ${dc}`,
                       cursor:'pointer',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
-                    }} title={a.patientName} onClick={()=>setModal({type:'apt',data:a})}>
+                    }} title={`${a.patientName} — د. ${a.therapist||'غير محدد'} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
                       {a.time} {a.patientName}
                     </div>
-                  ))}
+                  ); })}
                 </div>
               );
             })}
@@ -4295,6 +4311,70 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
     window.open(`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`,'_blank');
   };
 
+  // ── محرّك المراجعة الذكي: كشف الأخطاء المحاسبية والمصروفات الشاذة (كل الفترات) ──
+  const daysSince = (d) => d ? Math.floor((now - new Date(d)) / 86400000) : 0;
+  const issues = [];
+  const seenInv = {};
+  finance.forEach(f=>{
+    const total=+f.total||0, disc=+f.discount||0, paid=+f.paid||0, rem=+f.remaining||0;
+    const net=total-disc, expectedRem=Math.max(0,net-paid);
+    if(f.id){ if(seenInv[f.id]) issues.push({sev:'error',cat:'رقم مكرر',msg:`رقم الفاتورة ${f.id} مكرّر — قد يسبب تداخل بيانات`,inv:f}); seenInv[f.id]=true; }
+    if(Math.abs(expectedRem-rem) > 1) issues.push({sev:'error',cat:'خطأ حسابي',msg:`فاتورة ${f.id}: المتبقي المسجّل ${fmt(rem)} لا يطابق المحسوب ${fmt(expectedRem)} (الإجمالي - الخصم - المدفوع)`,inv:f});
+    if(total<0||paid<0||disc<0) issues.push({sev:'error',cat:'قيمة سالبة',msg:`فاتورة ${f.id} تحتوي قيمة سالبة`,inv:f});
+    if(paid > net+1) issues.push({sev:'warn',cat:'دفع زائد',msg:`فاتورة ${f.id}: المدفوع ${fmt(paid)} أكبر من المستحق ${fmt(net)}`,inv:f});
+    if(disc>total && total>0) issues.push({sev:'warn',cat:'خصم مرتفع',msg:`فاتورة ${f.id}: الخصم ${fmt(disc)} أكبر من الإجمالي ${fmt(total)}`,inv:f});
+    if(f.status==='مدفوع' && rem>0) issues.push({sev:'warn',cat:'حالة خاطئة',msg:`فاتورة ${f.id} حالتها "مدفوع" لكن يوجد متبقٍّ ${fmt(rem)}`,inv:f});
+    if(rem===0 && paid>0 && f.status!=='مدفوع') issues.push({sev:'info',cat:'تحديث حالة',msg:`فاتورة ${f.id} مسدّدة بالكامل لكن حالتها "${f.status||'—'}"`,inv:f});
+    if(!f.patientId) issues.push({sev:'warn',cat:'بدون مريض',msg:`فاتورة ${f.id} غير مرتبطة بملف مريض`,inv:f});
+  });
+  const seenExp = {};
+  expenses.forEach(e=>{
+    const amt=+e.amount||0;
+    if(amt<=0) issues.push({sev:'warn',cat:'قيمة غير صالحة',msg:`مصروف بتاريخ ${e.date||'—'} بقيمة ${fmt(amt)}`,exp:e});
+    if(!e.category) issues.push({sev:'info',cat:'بدون فئة',msg:`مصروف ${fmt(amt)} ${cur} بدون فئة محدّدة`,exp:e});
+    const k=`${e.date}|${e.amount}|${e.category}|${e.description}`;
+    if(seenExp[k]) issues.push({sev:'warn',cat:'مصروف مكرّر',msg:`مصروف مكرّر محتمل: ${e.description||e.category||'—'} بقيمة ${fmt(amt)} بتاريخ ${e.date||'—'}`,exp:e});
+    seenExp[k]=true;
+  });
+  const errCount = issues.filter(i=>i.sev==='error').length;
+  const warnCount = issues.filter(i=>i.sev==='warn').length;
+
+  // ── تقادم المستحقات (Aging) لتذكيرات دفع أدق ──
+  const overdue = finance.filter(f=>(f.remaining||0)>0).map(f=>({...f, age:daysSince(f.date)})).sort((a,b)=>b.age-a.age);
+  const buckets = {b0:0,b30:0,b60:0,b90:0};
+  overdue.forEach(f=>{ const a=f.age; if(a<=30)buckets.b0+=f.remaining; else if(a<=60)buckets.b30+=f.remaining; else if(a<=90)buckets.b60+=f.remaining; else buckets.b90+=f.remaining; });
+
+  // ── المصروفات المتكررة (تكاليف ثابتة: إيجار/رواتب...) — تظهر بعد تكرارها في شهرين مختلفين ──
+  const expGroups = {};
+  expenses.forEach(e=>{
+    const key = `${e.category||'أخرى'}|${normAr(e.description||'')}`;
+    const mo = (e.date||'').slice(0,7);
+    if(!expGroups[key]) expGroups[key] = {category:e.category||'أخرى', desc:e.description||'', months:new Set(), total:0, last:'', lastAmt:0};
+    const g=expGroups[key];
+    if(mo) g.months.add(mo);
+    g.total += (+e.amount||0);
+    if(!g.last || (e.date||'')>g.last){ g.last=e.date||''; g.lastAmt=+e.amount||0; }
+  });
+  const recurring = Object.values(expGroups)
+    .filter(g=>g.months.size>=2)
+    .map(g=>({...g, monthsCount:g.months.size, avg:Math.round(g.total/g.months.size), paidThisMonth:g.months.has(ym)}))
+    .sort((a,b)=>b.avg-a.avg);
+  const fixedMonthly = recurring.reduce((s,g)=>s+g.avg,0);
+  const dueRecurring = recurring.filter(g=>!g.paidThisMonth);
+
+  // ── تنبيه تجاوز الميزانية: إنفاق الشهر الحالي لكل فئة مقابل متوسطه التاريخي ──
+  const catMonths = {};
+  expenses.forEach(e=>{
+    const c=e.category||'أخرى', mo=(e.date||'').slice(0,7);
+    if(!catMonths[c]) catMonths[c]={months:new Set(), totalPast:0, current:0};
+    if(mo===ym) catMonths[c].current += (+e.amount||0);
+    else if(mo){ catMonths[c].months.add(mo); catMonths[c].totalPast += (+e.amount||0); }
+  });
+  const budgetAlerts = Object.entries(catMonths).map(([c,d])=>{
+    const avg = d.months.size>0 ? d.totalPast/d.months.size : 0;
+    return {category:c, avg:Math.round(avg), current:d.current, over: avg>0 && d.current > avg*1.3};
+  }).filter(b=>b.over).sort((a,b)=>(b.current-b.avg)-(a.current-a.avg));
+
   return(
     <div className="page-content">
       <div className="page-header">
@@ -4333,7 +4413,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
       </div>
 
       <div className="tabs-nav">
-        {[['invoices','📋 الفواتير'],['receivables','💳 الذمم'],['expenses','💸 المصروفات'],['reports','📊 التحليلات']].map(([k,l])=>(
+        {[['invoices','📋 الفواتير'],['receivables','💳 الذمم'],['expenses','💸 المصروفات'],['reports','📊 التحليلات'],['audit','🔍 المراجعة'+((errCount+warnCount)>0?` (${errCount+warnCount})`:'')]].map(([k,l])=>(
           <button key={k} className={`tab-btn ${tab===k?'active':''}`} onClick={()=>setTab(k)}>{l}</button>
         ))}
       </div>
@@ -4543,6 +4623,130 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
                 ))}
               </div>
               <button className="btn btn-secondary" style={{width:'100%',justifyContent:'center',marginTop:16}} onClick={printReport}>🖨️ طباعة التقرير المالي الكامل (PDF)</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab==='audit'&&(
+        <div style={{display:'flex',flexDirection:'column',gap:16}}>
+          <div className="card">
+            <div className="card-header"><h3>🔍 مراجعة سلامة البيانات المالية</h3></div>
+            <div className="card-body">
+              {issues.length===0
+                ? <div style={{display:'flex',alignItems:'center',gap:10,color:'var(--green)',fontWeight:800,fontSize:15}}><span style={{fontSize:22}}>✓</span> لا توجد أخطاء — جميع الفواتير والمصروفات سليمة محاسبياً</div>
+                : <div style={{display:'flex',gap:22,flexWrap:'wrap',fontSize:14,fontWeight:800}}>
+                    <span style={{color:'var(--red)'}}>⛔ {errCount} خطأ حرج</span>
+                    <span style={{color:'var(--accent)'}}>⚠️ {warnCount} تحذير</span>
+                    <span style={{color:'var(--text-light)'}}>ℹ️ {issues.length-errCount-warnCount} ملاحظة</span>
+                  </div>}
+            </div>
+          </div>
+
+          {issues.length>0&&(
+            <div className="card">
+              <div className="card-header"><h3>⚠️ المشاكل المكتشفة ({issues.length})</h3></div>
+              <table className="data-table">
+                <thead><tr><th>الخطورة</th><th>التصنيف</th><th>الوصف</th><th>إجراء</th></tr></thead>
+                <tbody>
+                  {issues.map((it,i)=>{
+                    const col=it.sev==='error'?'var(--red)':it.sev==='warn'?'var(--accent)':'var(--text-light)';
+                    const ico=it.sev==='error'?'⛔':it.sev==='warn'?'⚠️':'ℹ️';
+                    return (
+                      <tr key={i}>
+                        <td style={{color:col,fontWeight:800,fontSize:16,textAlign:'center'}}>{ico}</td>
+                        <td><span style={{fontSize:12,fontWeight:700,color:col}}>{it.cat}</span></td>
+                        <td style={{fontSize:13}}>{it.msg}</td>
+                        <td><div className="row-actions">
+                          {it.inv&&<button className="row-action-btn" title="فتح الفاتورة للتصحيح" onClick={()=>setModal(it.inv)}>✏️ تصحيح</button>}
+                          {it.exp&&<button className="row-action-btn" title="فتح المصروف للتصحيح" onClick={()=>setExpModal(it.exp)}>✏️ تصحيح</button>}
+                        </div></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="card">
+            <div className="card-header"><h3>⏳ تقادم المستحقات وتذكيرات الدفع</h3></div>
+            <div className="card-body">
+              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:16}}>
+                {[['0 – 30 يوم',buckets.b0,'var(--green)'],['31 – 60 يوم',buckets.b30,'var(--accent)'],['61 – 90 يوم',buckets.b60,'#d97706'],['أكثر من 90 يوم',buckets.b90,'var(--red)']].map(([l,v,c],i)=>(
+                  <div key={i} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,padding:14,textAlign:'center'}}>
+                    <div style={{fontSize:17,fontWeight:800,color:c}}>{fmt(v)} {cur}</div>
+                    <div style={{fontSize:12,color:'var(--text-light)',fontWeight:700,marginTop:3}}>{l}</div>
+                  </div>
+                ))}
+              </div>
+              {overdue.length===0
+                ? <div style={{textAlign:'center',color:'var(--green)',fontWeight:700,padding:10}}>✓ لا مستحقات متأخرة — كل الفواتير محصّلة</div>
+                : <table className="data-table">
+                    <thead><tr><th>المريض</th><th>الفاتورة</th><th>التاريخ</th><th>مدة التأخّر</th><th>المتبقي</th><th>تذكير</th></tr></thead>
+                    <tbody>
+                      {overdue.slice(0,40).map((f,i)=>{
+                        const ageCol=f.age>90?'var(--red)':f.age>60?'#d97706':f.age>30?'var(--accent)':'var(--text-mid)';
+                        return (
+                          <tr key={i}>
+                            <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate&&navigate('patient',f.patientId)}>{f.patientName}</td>
+                            <td>{f.id}</td>
+                            <td>{f.date||'—'}</td>
+                            <td><strong style={{color:ageCol}}>{f.age} يوم</strong></td>
+                            <td><strong style={{color:'var(--red)'}}>{fmt(f.remaining)} {cur}</strong></td>
+                            <td><button className="row-action-btn" title="تذكير دفع واتساب" style={{color:'#059669'}} onClick={()=>remindPay(f)}>📱</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header"><h3>🔁 المصروفات المتكررة والميزانية</h3></div>
+            <div className="card-body">
+              <div style={{display:'flex',gap:22,flexWrap:'wrap',marginBottom:14,fontSize:14,fontWeight:800}}>
+                <span>التكاليف الثابتة الشهرية المقدّرة: <span style={{color:'var(--accent)'}}>{fmt(fixedMonthly)} {cur}</span></span>
+                {dueRecurring.length>0 && <span style={{color:'var(--red)'}}>⏰ {dueRecurring.length} مصروف متكرر لم يُسجَّل هذا الشهر</span>}
+              </div>
+              {recurring.length===0
+                ? <div style={{textAlign:'center',color:'var(--text-light)',padding:10,fontSize:13}}>لا مصروفات متكررة بعد — تظهر تلقائياً بعد تسجيل نفس المصروف في شهرين مختلفين</div>
+                : <table className="data-table">
+                    <thead><tr><th>الفئة</th><th>الوصف</th><th>متوسط شهري</th><th>عدد الأشهر</th><th>آخر دفعة</th><th>هذا الشهر</th></tr></thead>
+                    <tbody>
+                      {recurring.map((g,i)=>(
+                        <tr key={i}>
+                          <td><span className="badge badge-orange">{g.category}</span></td>
+                          <td style={{fontSize:13}}>{g.desc||'—'}</td>
+                          <td><strong>{fmt(g.avg)} {cur}</strong></td>
+                          <td>{g.monthsCount}</td>
+                          <td>{g.last||'—'}</td>
+                          <td>{g.paidThisMonth
+                            ? <span style={{color:'var(--green)',fontWeight:800}}>✓ مدفوع</span>
+                            : <span style={{color:'var(--red)',fontWeight:800}}>⏰ مستحق</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>}
+              {budgetAlerts.length>0 && (
+                <div style={{marginTop:18}}>
+                  <h4 style={{fontSize:14,fontWeight:800,color:'var(--red)',marginBottom:10}}>🚨 تجاوز الإنفاق المعتاد هذا الشهر</h4>
+                  <table className="data-table">
+                    <thead><tr><th>الفئة</th><th>المتوسط الشهري</th><th>إنفاق هذا الشهر</th><th>الزيادة</th></tr></thead>
+                    <tbody>
+                      {budgetAlerts.map((b,i)=>(
+                        <tr key={i}>
+                          <td><strong>{b.category}</strong></td>
+                          <td>{fmt(b.avg)} {cur}</td>
+                          <td><strong style={{color:'var(--red)'}}>{fmt(b.current)} {cur}</strong></td>
+                          <td style={{color:'var(--red)',fontWeight:800}}>+{b.avg>0?Math.round((b.current-b.avg)/b.avg*100):0}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         </div>
