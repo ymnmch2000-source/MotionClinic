@@ -431,7 +431,7 @@ select.input{cursor:pointer;}
 </head>
 <body>
 <div id="root"></div>
-<script>/* ملف الموظفين المعزول — يخفي كل ما يخص المالية. نفس بيانات المرضى (Supabase). */ window.__MC_STAFF = true;</script>
+<script>/* ملف الموظفين المعزول — لا يعرض المالية */ window.__MC_STAFF = true;</script>
 <script type="text/babel" data-presets="react">
 /* @jsxRuntime classic */
 // ══════════════════════════════════════════════════
@@ -573,6 +573,8 @@ const TABLE_MAP = {
   staff: 'mc_staff',
   inventory: 'mc_inventory',
   hepLib: 'mc_hep',
+  attendance: 'mc_attendance',
+  tasks: 'mc_tasks',
 };
 
 // ══════════════════════════════════════════════════
@@ -929,6 +931,8 @@ function ClinicProvider({ children }) {
   const [staff,       setStaff]      = useState(() => ls('mc6_staff',       []));
   const [inventory,   setInventory]  = useState(() => ls('mc6_inventory',   []));
   const [hepLib,      setHepLib]     = useState(() => ls('mc6_hep',         []));
+  const [attendance,  setAttendance] = useState(() => ls('mc6_attendance',  []));
+  const [tasks,       setTasks]      = useState(() => ls('mc6_tasks',       []));
   const [audit,       setAudit]      = useState(() => ls('mc6_audit',       DEF_AUDIT));
   const [toast,       setToast]      = useState(null);
   const [syncStatus,  setSyncStatus] = useState('idle'); // idle | syncing | online | offline | error
@@ -950,6 +954,8 @@ function ClinicProvider({ children }) {
   useEffect(()=>{persistKV('mc6_staff',       staff);},      [staff]);
   useEffect(()=>{persistKV('mc6_inventory',   inventory);},  [inventory]);
   useEffect(()=>{persistKV('mc6_hep',         hepLib);},     [hepLib]);
+  useEffect(()=>{persistKV('mc6_attendance',  attendance);}, [attendance]);
+  useEffect(()=>{persistKV('mc6_tasks',       tasks);},      [tasks]);
   useEffect(()=>{persistKV('mc6_audit',       audit);},      [audit]);
   useEffect(()=>{persistKV('mc6_last_sync',   lastSync);},   [lastSync]);
 
@@ -958,8 +964,8 @@ function ClinicProvider({ children }) {
   useEffect(()=>{
     if(_hydratedRef.current) return; _hydratedRef.current=true;
     (async()=>{
-      const map={ mc6_patients:setPatients, mc6_records:setRecords, mc6_sessions:setSessions, mc6_appointments:setApts, mc6_finance:setFinance, mc6_expenses:setExpenses, mc6_inbody:setInbody, mc6_notes:setNotes, mc6_staff:setStaff, mc6_inventory:setInventory, mc6_hep:setHepLib };
-      const cur={ mc6_patients:patients, mc6_records:records, mc6_sessions:sessions, mc6_appointments:appointments, mc6_finance:finance, mc6_expenses:expenses, mc6_inbody:inbody, mc6_notes:notes, mc6_staff:staff, mc6_inventory:inventory, mc6_hep:hepLib };
+      const map={ mc6_patients:setPatients, mc6_records:setRecords, mc6_sessions:setSessions, mc6_appointments:setApts, mc6_finance:setFinance, mc6_expenses:setExpenses, mc6_inbody:setInbody, mc6_notes:setNotes, mc6_staff:setStaff, mc6_inventory:setInventory, mc6_hep:setHepLib, mc6_attendance:setAttendance, mc6_tasks:setTasks };
+      const cur={ mc6_patients:patients, mc6_records:records, mc6_sessions:sessions, mc6_appointments:appointments, mc6_finance:finance, mc6_expenses:expenses, mc6_inbody:inbody, mc6_notes:notes, mc6_staff:staff, mc6_inventory:inventory, mc6_hep:hepLib, mc6_attendance:attendance, mc6_tasks:tasks };
       for(const k of Object.keys(map)){
         try{ const v=await idbGet(k); if(Array.isArray(v) && v.length > (cur[k]?.length||0)) map[k](v); }catch(e){}
       }
@@ -1058,6 +1064,7 @@ function ClinicProvider({ children }) {
         mc_appointments: setApts, mc_finance: setFinance, mc_expenses: setExpenses,
         mc_inbody: setInbody, mc_notes: setNotes, mc_staff: setStaff,
         mc_inventory: setInventory, mc_hep: setHepLib,
+        mc_attendance: setAttendance, mc_tasks: setTasks,
       };
       await Promise.all(
         Object.entries(setters).map(async ([table, setter]) => {
@@ -1129,6 +1136,8 @@ function ClinicProvider({ children }) {
       mc_staff:        setStaff,
       mc_inventory:    setInventory,
       mc_hep:          setHepLib,
+      mc_attendance:   setAttendance,
+      mc_tasks:        setTasks,
     };
 
     // معالج التغييرات الواردة من Supabase Realtime
@@ -1280,6 +1289,8 @@ function ClinicProvider({ children }) {
   const stfCRUD  = CRUD(setStaff,     'STAFF',  'mc_staff');
   const invCRUD  = CRUD(setInventory, 'INVSTK', 'mc_inventory');
   const hepCRUD  = CRUD(setHepLib,    'HEP',    'mc_hep');
+  const attCRUD  = CRUD(setAttendance,'ATT',    'mc_attendance');
+  const taskCRUD = CRUD(setTasks,     'TSK',    'mc_tasks');
 
   // Categories CRUD
   const addCatItem = (grp, label) => {
@@ -1312,7 +1323,7 @@ function ClinicProvider({ children }) {
 
   // Backup/Restore
   const exportBackup = () => {
-    const data = {settings,categories,patients,records,sessions,appointments,finance,expenses,inbody,notes,staff,inventory,hepLib,audit,v:'6',ts:new Date().toISOString()};
+    const data = {settings,categories,patients,records,sessions,appointments,finance,expenses,inbody,notes,staff,inventory,hepLib,attendance,tasks,audit,v:'6',ts:new Date().toISOString()};
     const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -1335,6 +1346,8 @@ function ClinicProvider({ children }) {
     if(d.staff)       setStaff(d.staff);
     if(d.inventory)   setInventory(d.inventory);
     if(d.hepLib)      setHepLib(d.hepLib);
+    if(d.attendance)  setAttendance(d.attendance);
+    if(d.tasks)       setTasks(d.tasks);
     showToast('تم استيراد البيانات بنجاح ✓');
   };
 
@@ -1382,7 +1395,7 @@ function ClinicProvider({ children }) {
     setPatients([]); setRecords([]); setSessions([]);
     setApts([]); setFinance([]); setExpenses([]);
     setInbody([]); setNotes([]); setStaff([]);
-    setInventory([]); setHepLib([]); setAudit([]);
+    setInventory([]); setHepLib([]); setAttendance([]); setTasks([]); setAudit([]);
   };
 
   // ── نسخ احتياطي تلقائي محلي (لقطات) — حماية إضافية ضد فقدان البيانات ──
@@ -1402,7 +1415,7 @@ function ClinicProvider({ children }) {
 
   const value = {
     settings, categories, patients, records, sessions, appointments, finance, expenses,
-    inbody, notes, staff, inventory, hepLib, audit, toast, showToast,
+    inbody, notes, staff, inventory, hepLib, attendance, tasks, audit, toast, showToast,
     // Sync state
     syncStatus, lastSync, pendingCount, pullFromSupabase, flushPending,
     // Patient CRUD
@@ -1427,6 +1440,10 @@ function ClinicProvider({ children }) {
     addInventory:invCRUD.add, updateInventory:invCRUD.update, deleteInventory:invCRUD.delete,
     // HEP CRUD
     addHep:hepCRUD.add, updateHep:hepCRUD.update, deleteHep:hepCRUD.delete,
+    // Attendance CRUD
+    addAttendance:attCRUD.add, updateAttendance:attCRUD.update, deleteAttendance:attCRUD.delete,
+    // Tasks CRUD
+    addTask:taskCRUD.add, updateTask:taskCRUD.update, deleteTask:taskCRUD.delete,
     // Categories
     addCatItem, updateCatItem, deleteCatItem, addCatGroup, deleteCatGroup,
     // Settings
@@ -1515,7 +1532,7 @@ function InfoGrid({items}){
 // DASHBOARD
 // ══════════════════════════════════════════════════
 function Dashboard({navigate}){
-  const {patients,appointments,records,sessions,finance,expenses,inventory,inbody,settings} = useClinic();
+  const {patients,appointments,records,sessions,finance,expenses,inventory,inbody,settings,updateAppointment} = useClinic();
   const todayStr = today();
   const todayApts = appointments.filter(a=>a.date===todayStr);
   const totalRev = finance.filter(f=>f.status==='مدفوع').reduce((s,f)=>s+(f.paid||0),0);
@@ -1526,6 +1543,10 @@ function Dashboard({navigate}){
   const todaySessions = sessions.filter(s=>s.date===todayStr);
   const todayRev = todaySessions.reduce((s,x)=>s+(x.paid||0),0);
   const outstanding = finance.reduce((s,f)=>s+(f.remaining||0),0);
+  // 🆕 مرضى جدد اليوم (سجّلوا بتاريخ اليوم)
+  const newToday = patients.filter(p=>(p.registeredAt||p.created_at||'').slice(0,10)===todayStr).length;
+  // ⚠️ مواعيد لم يُحسم حضورها (اليوم أو سابقة، ما زالت مجدولة) — تحتاج تعليم حضر/لم يحضر
+  const unresolvedApts = appointments.filter(a=>(a.date||'')<=todayStr && (a.status==='confirmed'||a.status==='pending'));
   // مرضى منقطعون: آخر جلسة لهم منذ أكثر من 21 يوماً
   const lastSesMap = {};
   sessions.forEach(s=>{ if(s.patientId && (!lastSesMap[s.patientId] || s.date>lastSesMap[s.patientId])) lastSesMap[s.patientId]=s.date; });
@@ -1534,6 +1555,7 @@ function Dashboard({navigate}){
     .map(p=>({...p, last:lastSesMap[p.id], days:Math.floor((Date.now()-new Date(lastSesMap[p.id]).getTime())/dayMs)}))
     .sort((a,b)=>b.days-a.days);
   const lapsed = lapsedList.length;
+  const markAtt = (a, status) => updateAppointment(a.id, {...a, status});
   const remindApt = (a) => {
     const p = patients.find(x=>String(x.id)===String(a.patientId)) || {};
     let ph=(p.phone||a.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
@@ -1611,6 +1633,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
         {[
           ['👥 إجمالي المرضى', patients.length, '#1a3c5e'],
           ['✅ المرضى النشطون', activePatients, '#059669'],
+          ['🆕 مرضى جدد اليوم', newToday, '#0891b2'],
           ['📅 مواعيد اليوم', todayApts.length, '#2563eb'],
           ['🔄 جلسات اليوم', todaySessions.length, '#7c3aed'],
           ...(STAFF_MODE ? [] : [
@@ -1646,13 +1669,17 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
               </div>
             ):(
               <table className="data-table">
-                <thead><tr><th>الوقت</th><th>المريض</th><th>الحالة</th><th>تذكير</th></tr></thead>
+                <thead><tr><th>الوقت</th><th>المريض</th><th>الحالة</th><th>الحضور</th><th>تذكير</th></tr></thead>
                 <tbody>
                   {todayApts.map(a=>(
                     <tr key={a.id}>
                       <td><strong>{a.time}</strong></td>
                       <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{a.patientName}</td>
                       <td><StatusBadge status={a.status}/></td>
+                      <td style={{whiteSpace:'nowrap'}}>
+                        <button className="row-action-btn" title="حضر" style={{color:'#059669'}} onClick={()=>markAtt(a,'completed')}>✅</button>
+                        <button className="row-action-btn" title="لم يحضر" style={{color:'#dc2626'}} onClick={()=>markAtt(a,'missed')}>❌</button>
+                      </td>
                       <td><button className="row-action-btn" title="تذكير واتساب" style={{color:'#059669'}} onClick={()=>remindApt(a)}>📱</button></td>
                     </tr>
                   ))}
@@ -1680,6 +1707,35 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
           </div>
         </div>
       </div>
+
+      {unresolvedApts.length>0 && (
+        <div className="card" style={{marginTop:20,borderTop:'3px solid #dc2626'}}>
+          <div className="card-header">
+            <h3>⏳ مواعيد بحاجة لتأكيد الحضور ({unresolvedApts.length})</h3>
+            <span style={{fontSize:12,color:'#6b7280'}}>مواعيد اليوم أو سابقة لم يُسجَّل فيها حضر/لم يحضر</span>
+          </div>
+          <div className="card-body" style={{padding:0}}>
+            <table className="data-table">
+              <thead><tr><th>التاريخ</th><th>الوقت</th><th>المريض</th><th>المعالج</th><th>تأكيد الحضور</th><th>تذكير</th></tr></thead>
+              <tbody>
+                {unresolvedApts.slice(0,40).map(a=>(
+                  <tr key={a.id}>
+                    <td>{a.date}</td>
+                    <td><strong>{a.time}</strong></td>
+                    <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{a.patientName}</td>
+                    <td>{a.therapist||'—'}</td>
+                    <td style={{whiteSpace:'nowrap'}}>
+                      <button className="btn btn-sm" style={{background:'#05966922',color:'#059669',marginLeft:4}} onClick={()=>markAtt(a,'completed')}>✅ حضر</button>
+                      <button className="btn btn-sm" style={{background:'#dc262622',color:'#dc2626'}} onClick={()=>markAtt(a,'missed')}>❌ لم يحضر</button>
+                    </td>
+                    <td><button className="row-action-btn" title="تذكير واتساب" style={{color:'#059669'}} onClick={()=>remindApt(a)}>📱</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {lapsedList.length>0 && (
         <div className="card" style={{marginTop:20,borderTop:'3px solid #d97706'}}>
@@ -7337,6 +7393,11 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       {id:'reports',   icon:'📊', label:'التقارير'},
       {id:'xray',      icon:'🩻', label:'مقارنة الأشعة'},
     ]},
+    { section:'المتابعة والكادر', items:[
+      {id:'opsreport',  icon:'🗓️', label:'التقارير التشغيلية'},
+      {id:'attendance', icon:'🕐', label:'الحضور والانصراف'},
+      {id:'tasks',      icon:'✅', label:'مهام الكادر'},
+    ]},
     { section:'الإدارة', items:[
       {id:'staff',      icon:'👨‍⚕️', label:'فريق العمل'},
       {id:'audit',      icon:'🔒',  label:'سجل التعديلات'},
@@ -7353,6 +7414,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
     finance:'المالية', hep:'مكتبة التمارين', services:'الخدمات',
     inventory:'المخزون', analytics:'التحليل التنبئي', reports:'التقارير',
     xray:'مقارنة الأشعة', staff:'فريق العمل', audit:'سجل التعديلات',
+    opsreport:'التقارير التشغيلية', attendance:'الحضور والانصراف', tasks:'مهام الكادر',
     categories:'الفئات', settings:'الإعدادات',
   };
 
@@ -7449,6 +7511,390 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
 }
 
 // ══════════════════════════════════════════════════
+// قوالب مهام الكادر (من نماذج المهام الوظيفية الرسمية للعيادة)
+// ══════════════════════════════════════════════════
+const TASK_ROLES = [
+  {key:'manager',      label:'المدير العام',        icon:'👔'},
+  {key:'reception',    label:'الاستقبال',           icon:'🛎️'},
+  {key:'accounting',   label:'المحاسبة',            icon:'🧮'},
+  {key:'social',       label:'السوشيال ميديا',      icon:'📱'},
+  {key:'housekeeping', label:'النظافة',             icon:'🧽'},
+  {key:'physio',       label:'العلاج الفيزيائي',    icon:'🧑‍⚕️'},
+];
+const TASK_TEMPLATES = {
+  manager: {
+    daily:['مراجعة عدد الجلسات ومرضى اليوم (جدد/قدامى)','تسجيل إجمالي الدخل اليومي','تقييم نسبة النظافة','رصد أسباب غياب المرضى','تقييم الالتزام بالمواعيد وخدمة العملاء ورد فعل المرضى'],
+    weekly:['تقييم الكادر: الأخطاء واللباس وترتيب مكان العمل','مراجعة تقارير المرضى ومتابعة تقدم الحالات','تحليل الجلسات الأسبوعي وأسباب عدم استكمال العلاج','عقد الاجتماع الأسبوعي (الخميس 10ص)','تحديد مواعيد الدكتور (محاضرات وسوشيال ميديا)','التحقق من نسبة الإنجاز الأسبوعي (هدف 70%)','إرسال فورم الأهداف الأسبوعي لكل موظف'],
+    monthly:['إعداد التقرير الشهري: المردود ونسبة الإنجاز (70%)','التأكد من الوصول إلى 31 مريضاً شهرياً كحد أدنى','تقييم أداء السوشيال ميديا (التفاعل والوصول)','تقرير أسباب عدم استكمال العلاج وتقييم المرضى للعيادة','تقييم أداء كل موظف على حدة','إعداد ملخص للإدارة العليا / الشركاء'],
+  },
+  reception: {
+    daily:['تسجيل عدد الحجوزات والحضور والإلغاء/الغياب','تسجيل مرضى جدد/قدامى وعدد المكالمات والاستفسارات','تسجيل المبلغ المحصل (نقدي/شبكة)','تأكيد مواعيد الغد','رصد أسباب الإلغاء/الغياب'],
+    weekly:['الاتصال بالمرضى الذين لم يحددوا موعداً تالياً','متابعة الاستفسارات التي لم تتحول لحجز (Leads)','تحديث جدول مواعيد الأسبوع القادم','إعداد تقرير نسبة الحضور مقابل الحجز','تحديث وترتيب بيانات المرضى في السستم'],
+    monthly:['تقرير معدل الحجوزات ونسبة الإلغاء','تقييم تجربة العميل واقتراحات لتحسين الاستقبال','جرد أدوات ومطبوعات الاستقبال','مراجعة ملاحظات المرضى المباشرة عن الخدمة'],
+  },
+  accounting: {
+    daily:['تسجيل إجمالي الدخل (نقدي/شبكة)','تسجيل إجمالي المصاريف وتفاصيلها','تسجيل عدد الجلسات المدفوعة والآجلة (دين)','مطابقة الصندوق مع الاستقبال + صافي الصندوق'],
+    weekly:['تقرير نهاية الأسبوع: عدد الجلسات والدخل','متابعة الديون المستحقة على المرضى','جرد المستلزمات والمصاريف التشغيلية'],
+    monthly:['التقرير الشهري الكامل: الدخل والمصاريف وصافي الربح','مقارنة الأداء بالشهر السابق (هدف +30% خلال 6 أشهر)','تقرير الرواتب (إن وجد)','تقرير الالتزامات المالية: إيجار وفواتير وغيرها'],
+  },
+  social: {
+    daily:['تسجيل عدد المنشورات/الستوريز والرسائل الواردة','عدد الاستفسارات المحوّلة للحجز والمتابعين الحالي','تحديد أفضل منشور/فيديو اليوم'],
+    weekly:['إعداد خطة/تقويم محتوى الأسبوع القادم','تصوير وإنتاج فيديو تعليمي أو ريلز','تقرير أداء أسبوعي: الوصول والتفاعل ومتابعون جدد','الرد على الرسائل والتعليقات المتراكمة','التنسيق مع المدير لمواعيد ظهور الدكتور'],
+    monthly:['تقرير شهري: نمو المتابعين وحجوزات السوشيال ميديا','تحليل أفضل المنشورات أداءً خلال الشهر','إعداد خطة محتوى الشهر القادم','مراجعة الميزانية الإعلانية (Boost) إن وجدت'],
+  },
+  housekeeping: {
+    daily:['تعقيم غرف العلاج','تنظيف الاستقبال وصالة الانتظار','تعقيم الأجهزة InBody/الأسرّة','تفريغ المهملات والتعطير','التقييم العام للنظافة'],
+    weekly:['تنظيف عميق: الأرضيات والنوافذ والحمامات','فحص مخزون مواد التعقيم والمناشف وطلب النواقص','تعقيم شامل لصالة الانتظار والكراسي'],
+    monthly:['تعقيم شامل للأجهزة والمفروشات','فحص تواريخ صلاحية مواد التعقيم','تقييم عام من المدير لمستوى النظافة'],
+  },
+  physio: {
+    daily:['تسجيل عدد الجلسات المنفذة ومرضى جدد/قدامى','تسجيل الجلسات بالسستم','كتابة ملخص خطة العلاج والتقنيات المستخدمة','التواصل مع مرضى الأمس للاطمئنان'],
+    weekly:['تقرير أسبوعي عن الحالات: الأهداف وأنواع الإصابات','حضور محاضرة تدريب مهني (3 أسبوعياً كحد أدنى)','تنظيف مكان العمل واحترام أوقات العمل'],
+    monthly:['تقييم تقدم كل حالة علاجية','حساب نسبة استكمال العلاج للحالات','تقييم ذاتي: المظهر واللباقة والالتزام بالزملاء'],
+  },
+};
+const PERIOD_LABELS = {daily:'يومي', weekly:'أسبوعي', monthly:'شهري'};
+// مفتاح الفترة: يومي=تاريخ اليوم، أسبوعي=تاريخ الإثنين، شهري=YYYY-MM
+function _mondayOf(ds){ const dt=new Date(ds); const off=(dt.getDay()+6)%7; dt.setDate(dt.getDate()-off); return dt.toISOString().slice(0,10); }
+function periodKeyFor(period){ const t=today(); if(period==='daily') return t; if(period==='weekly') return _mondayOf(t); return t.slice(0,7); }
+
+// ══════════════════════════════════════════════════
+// التقارير التشغيلية — يومي / أسبوعي / شهري
+// ══════════════════════════════════════════════════
+function OpsReportPage(){
+  const {patients,appointments,sessions,finance,expenses,tasks,settings,staff} = useClinic();
+  const [period,setPeriod] = useState('daily');
+  const cur = settings.currency || 'ل.س';
+  const todayStr = today();
+  const ym = todayStr.slice(0,7);
+  const weekAgo = new Date(Date.now()-6*86400000).toISOString().slice(0,10);
+  const inRange = (ds) => { if(!ds) return false; ds=String(ds).slice(0,10);
+    if(period==='daily') return ds===todayStr;
+    if(period==='weekly') return ds>=weekAgo && ds<=todayStr;
+    return ds.slice(0,7)===ym; };
+  const label = PERIOD_LABELS[period];
+
+  const newPatients = patients.filter(p=>inRange(p.registeredAt||p.created_at));
+  const aptsR = appointments.filter(a=>inRange(a.date));
+  const attended  = aptsR.filter(a=>a.status==='completed');
+  const noShow    = aptsR.filter(a=>a.status==='missed');
+  const cancelled = aptsR.filter(a=>a.status==='cancelled');
+  const scheduled = aptsR.filter(a=>a.status==='confirmed'||a.status==='pending');
+  const sesR = sessions.filter(s=>inRange(s.date));
+  const finR = finance.filter(f=>inRange(f.date));
+  const expR = expenses.filter(e=>inRange(e.date));
+  const income = finR.reduce((s,f)=>s+(f.paid||0),0);
+  const billed = finR.reduce((s,f)=>s+(f.total||0),0);
+  const outstanding = finR.reduce((s,f)=>s+(f.remaining||0),0);
+  const expTotal = expR.reduce((s,e)=>s+(e.amount||0),0);
+  const attRate = aptsR.length>0 ? Math.round(attended.length/aptsR.length*100) : 0;
+
+  // حسب المعالج
+  const byTher = {};
+  aptsR.forEach(a=>{ const t=a.therapist||'غير محدد'; if(!byTher[t]) byTher[t]={total:0,att:0,no:0}; byTher[t].total++; if(a.status==='completed') byTher[t].att++; if(a.status==='missed') byTher[t].no++; });
+  const therRows = Object.entries(byTher).sort((a,b)=>b[1].total-a[1].total);
+
+  // إنجاز مهام الكادر لهذه الفترة
+  const pk = periodKeyFor(period);
+  const rolePerf = TASK_ROLES.map(r=>{
+    const tmpl = (TASK_TEMPLATES[r.key]||{})[period]||[];
+    const doneCount = tasks.filter(t=>t.role===r.key && t.period===period && t.periodKey===pk && t.done).length;
+    const pct = tmpl.length>0 ? Math.round(Math.min(doneCount,tmpl.length)/tmpl.length*100) : 0;
+    return {...r, total:tmpl.length, done:Math.min(doneCount,tmpl.length), pct};
+  });
+
+  const KPI = [
+    ['🆕 مرضى جدد', newPatients.length, '#0891b2'],
+    ['✅ حضروا', attended.length, '#059669'],
+    ['❌ لم يحضروا', noShow.length, '#dc2626'],
+    ['🕓 لم يُحسم', scheduled.length, '#d97706'],
+    ['🚫 ملغية', cancelled.length, '#6b7280'],
+    ['🔄 الجلسات', sesR.length, '#7c3aed'],
+    ['📈 نسبة الحضور', attRate+'%', attRate>=70?'#059669':'#d97706'],
+    ...(STAFF_MODE?[]:[
+      ['🧾 الفواتير', finR.length, '#2563eb'],
+      ['💵 الدخل المحصّل', fmt(income)+' '+cur, '#059669'],
+      ['⏳ ذمم الفترة', fmt(outstanding)+' '+cur, outstanding>0?'#d97706':'#059669'],
+      ['💸 المصروفات', fmt(expTotal)+' '+cur, '#dc2626'],
+      ['📊 صافي الفترة', fmt(income-expTotal)+' '+cur, (income-expTotal)>=0?'#059669':'#dc2626'],
+    ]),
+  ];
+
+  const printReport = () => {
+    const w=window.open('','_blank'); if(!w){alert('فعّل النوافذ المنبثقة.');return;}
+    const card=(v,l,c)=>`<div class="c"><div class="v" style="color:${c}">${v}</div><div class="l">${l}</div></div>`;
+    const kpiHtml = KPI.map(([l,v,c])=>card(v,l.replace(/^[^ ]+ /,''),c)).join('');
+    const therHtml = therRows.map(([t,o])=>`<tr><td>${t}</td><td style="text-align:center">${o.total}</td><td style="text-align:center;color:#059669">${o.att}</td><td style="text-align:center;color:#dc2626">${o.no}</td><td style="text-align:center">${o.total>0?Math.round(o.att/o.total*100):0}%</td></tr>`).join('');
+    const perfHtml = rolePerf.map(r=>`<tr><td>${r.icon} ${r.label}</td><td style="text-align:center">${r.done}/${r.total}</td><td style="text-align:center;font-weight:700;color:${r.pct>=70?'#059669':'#d97706'}">${r.pct}%</td></tr>`).join('');
+    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير ${label}</title>
+<style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:30px;max-width:900px;margin:auto;color:#1e293b}
+.h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:24px;border-radius:14px;margin-bottom:20px}.h h1{font-size:22px}.h p{opacity:.9;font-size:13px;margin-top:4px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}.c{border:1px solid #e2e8f0;border-radius:10px;padding:14px;text-align:center}.c .v{font-size:18px;font-weight:800}.c .l{font-size:11px;color:#64748b;margin-top:3px}
+h2{font-size:16px;color:#0B3D5C;border-right:4px solid #B8893A;padding-right:10px;margin:22px 0 10px}
+table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px solid #e2e8f0;font-size:13px;text-align:right}th{background:#0B3D5C;color:#fff}
+.foot{margin-top:26px;text-align:center;font-size:12px;color:#94a3b8}@media print{.noprint{display:none}}</style></head><body>
+<div class="h"><h1>🗓️ التقرير ال${label} — ${settings.clinicName||'Motion Clinic'}</h1><p>${new Date().toLocaleDateString('ar-EG',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</p></div>
+<div class="cards">${kpiHtml}</div>
+<h2>الأداء حسب المعالج</h2>
+<table><thead><tr><th>المعالج</th><th>المواعيد</th><th>حضروا</th><th>لم يحضروا</th><th>نسبة الحضور</th></tr></thead><tbody>${therHtml||'<tr><td colspan=5 style="text-align:center;color:#888">لا بيانات</td></tr>'}</tbody></table>
+<h2>إنجاز مهام الكادر (${label})</h2>
+<table><thead><tr><th>الدور</th><th>المنجز</th><th>النسبة</th></tr></thead><tbody>${perfHtml}</tbody></table>
+<div class="foot">${settings.clinicName||'Motion Clinic'} — ${settings.phone||''}</div>
+<div class="noprint" style="text-align:center;margin-top:20px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 30px;border-radius:10px;font-family:Cairo;font-size:15px;font-weight:700;cursor:pointer">🖨️ طباعة / PDF</button></div>
+</body></html>`); w.document.close();
+  };
+
+  return(
+    <div className="page-content">
+      <div className="page-header">
+        <div><h1 className="page-title">🗓️ التقارير التشغيلية</h1><p className="page-subtitle">متابعة يومية وأسبوعية وشهرية لأداء العيادة والكادر</p></div>
+        <button className="btn btn-secondary" onClick={printReport}>🖨️ طباعة التقرير</button>
+      </div>
+
+      <div style={{display:'flex',gap:8,marginBottom:16}}>
+        {['daily','weekly','monthly'].map(p=>(
+          <button key={p} className={'btn '+(period===p?'btn-primary':'btn-ghost')} onClick={()=>setPeriod(p)}>
+            {p==='daily'?'📅 اليوم':p==='weekly'?'📆 هذا الأسبوع':'🗓️ هذا الشهر'}
+          </button>
+        ))}
+      </div>
+
+      <div className="stats-grid">
+        {KPI.map(([l,v,c],i)=>(
+          <div key={i} className="stat-card">
+            <div className="stat-icon" style={{background:c+'22',color:c,fontSize:24}}>{l.split(' ')[0]}</div>
+            <div className="stat-content"><h3 style={{color:c}}>{v}</h3><p>{l.replace(/^[^ ]+ /,'')}</p></div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid-2" style={{gap:20,marginTop:20}}>
+        <div className="card">
+          <div className="card-header"><h3>👨‍⚕️ الأداء حسب المعالج</h3></div>
+          <div className="card-body" style={{padding:0}}>
+            <table className="data-table">
+              <thead><tr><th>المعالج</th><th>المواعيد</th><th>حضروا</th><th>لم يحضروا</th><th>النسبة</th></tr></thead>
+              <tbody>
+                {therRows.length===0?(<tr><td colSpan={5} style={{textAlign:'center',color:'#888',padding:20}}>لا مواعيد في هذه الفترة</td></tr>):
+                  therRows.map(([t,o])=>(
+                    <tr key={t}><td style={{fontWeight:700}}>{t}</td><td style={{textAlign:'center'}}>{o.total}</td>
+                    <td style={{textAlign:'center',color:'#059669'}}>{o.att}</td><td style={{textAlign:'center',color:'#dc2626'}}>{o.no}</td>
+                    <td style={{textAlign:'center',fontWeight:700}}>{o.total>0?Math.round(o.att/o.total*100):0}%</td></tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header"><h3>✅ إنجاز مهام الكادر ({label})</h3></div>
+          <div className="card-body">
+            {rolePerf.map(r=>(
+              <div key={r.key} style={{marginBottom:12}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,marginBottom:4}}>
+                  <span>{r.icon} {r.label}</span><span style={{color:r.pct>=70?'#059669':'#d97706'}}>{r.done}/{r.total} · {r.pct}%</span>
+                </div>
+                <div style={{height:8,background:'#e5e7eb',borderRadius:6,overflow:'hidden'}}>
+                  <div style={{width:r.pct+'%',height:'100%',background:r.pct>=70?'#059669':'#d97706'}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {newPatients.length>0 && (
+        <div className="card" style={{marginTop:20,borderTop:'3px solid #0891b2'}}>
+          <div className="card-header"><h3>🆕 المرضى الجدد ({label}) — {newPatients.length}</h3></div>
+          <div className="card-body" style={{padding:0}}>
+            <table className="data-table">
+              <thead><tr><th>المعرّف</th><th>الاسم</th><th>الهاتف</th><th>المصدر</th><th>تاريخ التسجيل</th></tr></thead>
+              <tbody>{newPatients.map(p=>(<tr key={p.id}><td>{p.id}</td><td style={{fontWeight:700}}>{p.name}</td><td>{p.phone}</td><td>{p.source||'—'}</td><td>{(p.registeredAt||p.created_at||'').slice(0,10)}</td></tr>))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
+// الحضور والانصراف — يملؤها مراقب الدوام عند حضور الموظف
+// ══════════════════════════════════════════════════
+function AttendancePage(){
+  const {staff,attendance,addAttendance,updateAttendance,settings} = useClinic();
+  const todayStr = today();
+  const ym = todayStr.slice(0,7);
+  const monitor = localStorage.getItem('mc_staff_name') || (settings.therapistName||'');
+  const calcHours = (inT,outT) => { if(!inT||!outT) return 0; const [ih,im]=inT.split(':').map(Number); const [oh,om]=outT.split(':').map(Number); let mins=(oh*60+om)-(ih*60+im); if(mins<0) mins+=24*60; return Math.round(mins/60*100)/100; };
+  const recFor = (sid) => attendance.find(a=>a.staffId===sid && a.date===todayStr);
+  const setField = (s, field, val) => {
+    const ex = recFor(s.id);
+    const base = ex || {id:'ATT-'+todayStr+'-'+s.id, staffId:s.id, staffName:s.name, date:todayStr, checkIn:'', checkOut:'', note:'', recordedBy:monitor};
+    const next = {...base, [field]:val, recordedBy:monitor};
+    next.hours = calcHours(next.checkIn, next.checkOut);
+    if(ex) updateAttendance(ex.id, next); else addAttendance(next);
+  };
+  // ملخص شهري
+  const monthRecs = attendance.filter(a=>String(a.date||'').slice(0,7)===ym);
+  const summary = {};
+  monthRecs.forEach(a=>{ if(!summary[a.staffId]) summary[a.staffId]={name:a.staffName,days:0,hours:0}; summary[a.staffId].days++; summary[a.staffId].hours+=(a.hours||0); });
+  const sumRows = Object.values(summary).sort((a,b)=>b.hours-a.hours);
+  const totalHoursToday = staff.reduce((s,st)=>{ const r=recFor(st.id); return s+(r?.hours||0); },0);
+
+  return(
+    <div className="page-content">
+      <div className="page-header">
+        <div><h1 className="page-title">🕐 الحضور والانصراف</h1><p className="page-subtitle">تُملأ من مراقب الدوام — تُحسب ساعات العمل تلقائياً</p></div>
+        <div className="status-pill" style={{background:'#2563eb22',color:'#2563eb',fontWeight:800}}>⏱️ إجمالي ساعات اليوم: {totalHoursToday}</div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><h3>📋 دوام اليوم — {todayStr}</h3><span style={{fontSize:12,color:'#6b7280'}}>المراقب: {monitor||'—'}</span></div>
+        <div className="card-body" style={{padding:0}}>
+          {staff.length===0?(
+            <div className="empty-state" style={{padding:30}}><div className="icon">👨‍⚕️</div><h3>لا يوجد موظفون</h3><p>أضف الموظفين من صفحة «فريق العمل» أولاً.</p></div>
+          ):(
+            <table className="data-table">
+              <thead><tr><th>الموظف</th><th>الدور</th><th>الحضور</th><th>الانصراف</th><th>الساعات</th></tr></thead>
+              <tbody>
+                {staff.map(s=>{ const r=recFor(s.id); return(
+                  <tr key={s.id}>
+                    <td style={{fontWeight:700}}>{s.name}</td>
+                    <td style={{fontSize:12,color:'#6b7280'}}>{s.role||'—'}</td>
+                    <td><input className="input" type="time" style={{maxWidth:130}} value={r?.checkIn||''} onChange={e=>setField(s,'checkIn',e.target.value)}/></td>
+                    <td><input className="input" type="time" style={{maxWidth:130}} value={r?.checkOut||''} onChange={e=>setField(s,'checkOut',e.target.value)}/></td>
+                    <td style={{fontWeight:800,color:(r?.hours||0)>0?'#059669':'#9ca3af'}}>{r?.hours||0} س</td>
+                  </tr>
+                ); })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      <div className="card" style={{marginTop:20}}>
+        <div className="card-header"><h3>📊 ملخص الشهر ({ym})</h3></div>
+        <div className="card-body" style={{padding:0}}>
+          <table className="data-table">
+            <thead><tr><th>الموظف</th><th>أيام الحضور</th><th>إجمالي الساعات</th><th>متوسط/يوم</th></tr></thead>
+            <tbody>
+              {sumRows.length===0?(<tr><td colSpan={4} style={{textAlign:'center',color:'#888',padding:20}}>لا سجلات هذا الشهر</td></tr>):
+                sumRows.map((r,i)=>(<tr key={i}><td style={{fontWeight:700}}>{r.name}</td><td style={{textAlign:'center'}}>{r.days}</td><td style={{textAlign:'center',fontWeight:800,color:'#059669'}}>{Math.round(r.hours*100)/100} س</td><td style={{textAlign:'center'}}>{r.days>0?Math.round(r.hours/r.days*100)/100:0} س</td></tr>))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
+// مركز مهام الكادر + مرضى المعالج اليوم
+// ══════════════════════════════════════════════════
+function TaskCenterPage(){
+  const {tasks,addTask,updateTask,staff,appointments,patients,settings,updateAppointment} = useClinic();
+  const [role,setRole] = useState(localStorage.getItem('mc_role')||'physio');
+  const [myName,setMyName] = useState(localStorage.getItem('mc_staff_name')||'');
+  const [period,setPeriod] = useState('daily');
+  const todayStr = today();
+  useEffect(()=>{ localStorage.setItem('mc_role',role); },[role]);
+  useEffect(()=>{ localStorage.setItem('mc_staff_name',myName); },[myName]);
+
+  const pk = periodKeyFor(period);
+  const tmpl = (TASK_TEMPLATES[role]||{})[period]||[];
+  const recFor = (idx) => tasks.find(t=>t.role===role && t.period===period && t.periodKey===pk && t.taskKey===String(idx));
+  const toggle = (idx, title) => {
+    const ex = recFor(idx);
+    if(ex) updateTask(ex.id, {...ex, done:!ex.done});
+    else addTask({id:'TSK-'+period+'-'+role+'-'+idx+'-'+pk, role, staffName:myName, period, taskKey:String(idx), title, periodKey:pk, done:true});
+  };
+  const doneCount = tmpl.reduce((n,_,i)=> n + (recFor(i)?.done?1:0), 0);
+  const pct = tmpl.length>0 ? Math.round(doneCount/tmpl.length*100) : 0;
+
+  // مرضى اليوم للمعالج (حسب اسم المعالج على الموعد)
+  const myApts = appointments.filter(a=>a.date===todayStr && (!myName || (a.therapist||'')===myName)).sort((a,b)=>String(a.time).localeCompare(String(b.time)));
+  const markAtt = (a,status)=>updateAppointment(a.id,{...a,status});
+  const roleObj = TASK_ROLES.find(r=>r.key===role)||{};
+
+  return(
+    <div className="page-content">
+      <div className="page-header">
+        <div><h1 className="page-title">✅ مركز مهام الكادر</h1><p className="page-subtitle">كل موظف يختار دوره ويتابع مهامه اليومية والأسبوعية والشهرية</p></div>
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-body" style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-end'}}>
+          <Field label="الدور الوظيفي">
+            <select className="input" value={role} onChange={e=>setRole(e.target.value)}>
+              {TASK_ROLES.map(r=><option key={r.key} value={r.key}>{r.icon} {r.label}</option>)}
+            </select>
+          </Field>
+          <Field label="اسم الموظف">
+            <input className="input" list="staffNames" value={myName} onChange={e=>setMyName(e.target.value)} placeholder="اكتب اسمك"/>
+            <datalist id="staffNames">{staff.map(s=><option key={s.id} value={s.name}/>)}</datalist>
+          </Field>
+        </div>
+      </div>
+
+      <div style={{display:'flex',gap:8,marginBottom:16}}>
+        {['daily','weekly','monthly'].map(p=>(
+          <button key={p} className={'btn '+(period===p?'btn-primary':'btn-ghost')} onClick={()=>setPeriod(p)}>
+            {p==='daily'?'📅 يومي':p==='weekly'?'📆 أسبوعي':'🗓️ شهري'}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid-2" style={{gap:20}}>
+        <div className="card">
+          <div className="card-header">
+            <h3>{roleObj.icon} مهام {PERIOD_LABELS[period]} — {roleObj.label}</h3>
+            <span style={{fontSize:13,fontWeight:800,color:pct>=70?'#059669':'#d97706'}}>{doneCount}/{tmpl.length} · {pct}%</span>
+          </div>
+          <div className="card-body">
+            <div style={{height:8,background:'#e5e7eb',borderRadius:6,overflow:'hidden',marginBottom:14}}>
+              <div style={{width:pct+'%',height:'100%',background:pct>=70?'#059669':'#d97706',transition:'width .3s'}}/>
+            </div>
+            {tmpl.map((t,i)=>{ const done=recFor(i)?.done; return(
+              <label key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 8px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}}>
+                <input type="checkbox" checked={!!done} onChange={()=>toggle(i,t)} style={{width:18,height:18,accentColor:'#059669'}}/>
+                <span style={{fontSize:14,textDecoration:done?'line-through':'none',color:done?'#9ca3af':'#1e293b'}}>{t}</span>
+              </label>
+            ); })}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header"><h3>👥 مرضاي اليوم {myName?('· '+myName):''} ({myApts.length})</h3></div>
+          <div className="card-body" style={{padding:0}}>
+            {myApts.length===0?(
+              <div className="empty-state" style={{padding:30}}><div className="icon">📅</div><h3>لا مواعيد اليوم</h3><p>{myName?'لا مواعيد مخصصة لك اليوم.':'اكتب اسمك لعرض مواعيدك.'}</p></div>
+            ):(
+              <table className="data-table">
+                <thead><tr><th>الوقت</th><th>المريض</th><th>الحالة</th><th>الحضور</th></tr></thead>
+                <tbody>
+                  {myApts.map(a=>(
+                    <tr key={a.id}>
+                      <td><strong>{a.time}</strong></td>
+                      <td style={{fontWeight:700}}>{a.patientName}</td>
+                      <td><StatusBadge status={a.status}/></td>
+                      <td style={{whiteSpace:'nowrap'}}>
+                        <button className="row-action-btn" title="حضر" style={{color:'#059669'}} onClick={()=>markAtt(a,'completed')}>✅</button>
+                        <button className="row-action-btn" title="لم يحضر" style={{color:'#dc2626'}} onClick={()=>markAtt(a,'missed')}>❌</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
 // PAGE ROUTER
 // ══════════════════════════════════════════════════
 function PageRouter({currentPage, patientId, navigate}){
@@ -7469,6 +7915,9 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'xray':       return <XRayPage navigate={navigate}/>;
     case 'notes':      return <NotesPage/>;
     case 'staff':      return <StaffPage/>;
+    case 'opsreport':  return <OpsReportPage/>;
+    case 'attendance': return <AttendancePage/>;
+    case 'tasks':      return <TaskCenterPage/>;
     case 'audit':      return <AuditPage/>;
     case 'categories': return <CategoriesPage/>;
     case 'settings':   return <SettingsPage/>;
