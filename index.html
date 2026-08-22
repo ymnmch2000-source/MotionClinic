@@ -7393,8 +7393,8 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       {id:'xray',      icon:'🩻', label:'مقارنة الأشعة'},
     ]},
     { section:'المتابعة والكادر', items:[
-      {id:'opsreport',  icon:'🗓️', label:'التقارير التشغيلية'},
-      {id:'attendance', icon:'🕐', label:'الحضور والانصراف'},
+      ...(STAFF_MODE ? [] : [{id:'opsreport',  icon:'🗓️', label:'التقارير التشغيلية'}]),
+      ...(STAFF_MODE ? [] : [{id:'attendance', icon:'🕐', label:'الحضور والانصراف'}]),
       {id:'tasks',      icon:'✅', label:'مهام الكادر'},
     ]},
     { section:'الإدارة', items:[
@@ -7792,24 +7792,39 @@ function AttendancePage(){
 // مركز مهام الكادر + مرضى المعالج اليوم
 // ══════════════════════════════════════════════════
 function TaskCenterPage(){
-  const {tasks,addTask,updateTask,staff,appointments,patients,settings,updateAppointment} = useClinic();
+  const {tasks,addTask,updateTask,deleteTask,staff,appointments,patients,settings,updateAppointment} = useClinic();
   const [role,setRole] = useState(localStorage.getItem('mc_role')||'physio');
   const [myName,setMyName] = useState(localStorage.getItem('mc_staff_name')||'');
   const [period,setPeriod] = useState('daily');
+  const [newTask,setNewTask] = useState('');
+  const isAdmin = !STAFF_MODE;
   const todayStr = today();
   useEffect(()=>{ localStorage.setItem('mc_role',role); },[role]);
   useEffect(()=>{ localStorage.setItem('mc_staff_name',myName); },[myName]);
 
   const pk = periodKeyFor(period);
   const tmpl = (TASK_TEMPLATES[role]||{})[period]||[];
-  const recFor = (idx) => tasks.find(t=>t.role===role && t.period===period && t.periodKey===pk && t.taskKey===String(idx));
-  const toggle = (idx, title) => {
-    const ex = recFor(idx);
+  // القائمة الموحّدة = المهام الجاهزة (من القوالب) + مهام الإدارة اليدوية (custom)
+  const customDefs = tasks.filter(t=>t.custom && t.role===role && t.period===period);
+  const items = [
+    ...tmpl.map((title,i)=>({key:String(i), title, custom:false})),
+    ...customDefs.map(d=>({key:d.id, title:d.title, custom:true, defId:d.id})),
+  ];
+  const recFor = (key) => tasks.find(t=>!t.custom && t.role===role && t.period===period && t.periodKey===pk && t.taskKey===key);
+  const toggle = (key, title) => {
+    if(!isAdmin) return; // الموظف عرض فقط — الإدارة تعلّم الإنجاز
+    const ex = recFor(key);
     if(ex) updateTask(ex.id, {...ex, done:!ex.done});
-    else addTask({id:'TSK-'+period+'-'+role+'-'+idx+'-'+pk, role, staffName:myName, period, taskKey:String(idx), title, periodKey:pk, done:true});
+    else addTask({id:'TSK-'+period+'-'+role+'-'+key+'-'+pk, role, staffName:myName, period, taskKey:key, title, periodKey:pk, done:true});
   };
-  const doneCount = tmpl.reduce((n,_,i)=> n + (recFor(i)?.done?1:0), 0);
-  const pct = tmpl.length>0 ? Math.round(doneCount/tmpl.length*100) : 0;
+  const addCustom = () => {
+    const t = newTask.trim(); if(!t) return;
+    addTask({id:uid('TSKDEF'), custom:true, role, period, title:t});
+    setNewTask('');
+  };
+  const delCustom = (id) => { if(confirm('حذف هذه المهمة من القائمة؟')) deleteTask(id); };
+  const doneCount = items.reduce((n,it)=> n + (recFor(it.key)?.done?1:0), 0);
+  const pct = items.length>0 ? Math.round(doneCount/items.length*100) : 0;
 
   // مرضى اليوم للمعالج (حسب اسم المعالج على الموعد)
   const myApts = appointments.filter(a=>a.date===todayStr && (!myName || (a.therapist||'')===myName)).sort((a,b)=>String(a.time).localeCompare(String(b.time)));
@@ -7819,7 +7834,7 @@ function TaskCenterPage(){
   return(
     <div className="page-content">
       <div className="page-header">
-        <div><h1 className="page-title">✅ مركز مهام الكادر</h1><p className="page-subtitle">كل موظف يختار دوره ويتابع مهامه اليومية والأسبوعية والشهرية</p></div>
+        <div><h1 className="page-title">✅ مركز مهام الكادر</h1><p className="page-subtitle">{isAdmin?'الإدارة تضيف المهام وتعلّم إنجازها — وتظهر للموظفين للاطلاع':'مهامك اليومية والأسبوعية والشهرية (عرض فقط — الإدارة تعلّم الإنجاز)'}</p></div>
       </div>
 
       <div className="card" style={{marginBottom:16}}>
@@ -7854,10 +7869,18 @@ function TaskCenterPage(){
             <div style={{height:8,background:'#e5e7eb',borderRadius:6,overflow:'hidden',marginBottom:14}}>
               <div style={{width:pct+'%',height:'100%',background:pct>=70?'#059669':'#d97706',transition:'width .3s'}}/>
             </div>
-            {tmpl.map((t,i)=>{ const done=recFor(i)?.done; return(
-              <label key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 8px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}}>
-                <input type="checkbox" checked={!!done} onChange={()=>toggle(i,t)} style={{width:18,height:18,accentColor:'#059669'}}/>
-                <span style={{fontSize:14,textDecoration:done?'line-through':'none',color:done?'#9ca3af':'#1e293b'}}>{t}</span>
+            {isAdmin && (
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
+                <input className="input" value={newTask} onChange={e=>setNewTask(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')addCustom();}} placeholder={'أضف مهمة جديدة لـ '+(TASK_ROLES.find(r=>r.key===role)||{}).label+' ('+PERIOD_LABELS[period]+')…'} style={{flex:1}}/>
+                <button className="btn btn-primary" onClick={addCustom}>➕ إضافة</button>
+              </div>
+            )}
+            {items.length===0 && <div className="empty-state" style={{padding:20}}><p>لا مهام بعد.</p></div>}
+            {items.map((it)=>{ const done=recFor(it.key)?.done; return(
+              <label key={it.key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 8px',borderBottom:'1px solid #f1f5f9',cursor:isAdmin?'pointer':'default'}}>
+                <input type="checkbox" checked={!!done} disabled={!isAdmin} onChange={()=>toggle(it.key,it.title)} style={{width:18,height:18,accentColor:'#059669',cursor:isAdmin?'pointer':'not-allowed'}}/>
+                <span style={{flex:1,fontSize:14,textDecoration:done?'line-through':'none',color:done?'#9ca3af':'#1e293b'}}>{it.title}{it.custom && <em style={{color:'#7c3aed',fontSize:11,marginRight:6,fontStyle:'normal'}}> · مهمة الإدارة</em>}</span>
+                {isAdmin && it.custom && <button className="row-action-btn" title="حذف المهمة" style={{color:'#dc2626'}} onClick={(e)=>{e.preventDefault();delCustom(it.defId);}}>🗑️</button>}
               </label>
             ); })}
           </div>
@@ -7914,8 +7937,8 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'xray':       return <XRayPage navigate={navigate}/>;
     case 'notes':      return <NotesPage/>;
     case 'staff':      return <StaffPage/>;
-    case 'opsreport':  return <OpsReportPage/>;
-    case 'attendance': return <AttendancePage/>;
+    case 'opsreport':  return STAFF_MODE ? <Dashboard navigate={navigate}/> : <OpsReportPage/>;
+    case 'attendance': return STAFF_MODE ? <Dashboard navigate={navigate}/> : <AttendancePage/>;
     case 'tasks':      return <TaskCenterPage/>;
     case 'audit':      return <AuditPage/>;
     case 'categories': return <CategoriesPage/>;
