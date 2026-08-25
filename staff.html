@@ -4250,7 +4250,7 @@ function CalendarPage(){
 // FINANCE PAGE
 // ══════════════════════════════════════════════════
 function FinancePage({navigate}){
-  const {finance, expenses, patients, settings, deleteFinance, deleteExpense, addExpense, updateExpense} = useClinic();
+  const {finance, expenses, patients, sessions, appointments, settings, deleteFinance, deleteExpense, addExpense, updateExpense} = useClinic();
   const [tab,setTab] = useState('invoices');
   const [modal,setModal] = useState(null);
   const [expModal,setExpModal] = useState(null);
@@ -4309,6 +4309,114 @@ function FinancePage({navigate}){
   const trendMax = Math.max(1, ...trend.map(t=>Math.max(t.rev,t.ex)));
 
   const filteredInv = finP.filter(f=>!search||f.patientName?.includes(search)||f.id?.includes(search)||f.serviceLabel?.includes(search));
+
+  // ═══ التقارير الدورية: يومي / أسبوعي / شهري ═══
+  const isoD = (x)=>{ const m=x.getMonth()+1, dd=x.getDate(); return x.getFullYear()+'-'+(m<10?'0':'')+m+'-'+(dd<10?'0':'')+dd; };
+  const [rKind,setRKind]     = useState('daily');   // daily | weekly | monthly
+  const [rAnchor,setRAnchor] = useState(today());
+  const rRange = (()=>{
+    const d = new Date(rAnchor+'T00:00:00');
+    if(isNaN(d.getTime())) return {from:rAnchor,to:rAnchor,label:rAnchor};
+    if(rKind==='daily')  return {from:isoD(d), to:isoD(d), label:'يوم '+isoD(d)};
+    if(rKind==='weekly'){
+      const s=new Date(d); s.setDate(d.getDate()-((d.getDay()+1)%7)); // بداية الأسبوع = السبت
+      const e=new Date(s); e.setDate(s.getDate()+6);
+      return {from:isoD(s), to:isoD(e), label:'أسبوع '+isoD(s)+' → '+isoD(e)};
+    }
+    const s=new Date(d.getFullYear(),d.getMonth(),1), e=new Date(d.getFullYear(),d.getMonth()+1,0);
+    return {from:isoD(s), to:isoD(e), label:'شهر '+isoD(s).slice(0,7)};
+  })();
+  const shiftR = (dir)=>{
+    const d=new Date(rAnchor+'T00:00:00'); if(isNaN(d.getTime())) return;
+    if(rKind==='daily') d.setDate(d.getDate()+dir);
+    else if(rKind==='weekly') d.setDate(d.getDate()+7*dir);
+    else d.setMonth(d.getMonth()+dir);
+    setRAnchor(isoD(d));
+  };
+  const rIn  = (d)=> !!d && d>=rRange.from && d<=rRange.to;
+  const rInv = finance.filter(f=>rIn(f.date));
+  const rExp = expenses.filter(e=>rIn(e.date));
+  const rSes = sessions.filter(s=>rIn(s.date));
+  const rApt = appointments.filter(a=>rIn(a.date));
+  const rAttended = rApt.filter(a=>a.status==='completed').length;
+  const rNoShow   = rApt.filter(a=>a.status==='missed'||a.status==='cancelled').length;
+  const rBilled = rInv.reduce((s,f)=>s+(f.total||0),0);
+  const rPaid   = rInv.reduce((s,f)=>s+(f.paid||0),0);
+  const rDisc   = rInv.reduce((s,f)=>s+(f.discount||0),0);
+  const rRem    = rInv.reduce((s,f)=>s+(f.remaining||0),0);
+  const rExpTot = rExp.reduce((s,e)=>s+(e.amount||0),0);
+  const rNet    = rPaid - rExpTot;
+  const rNewPat = patients.filter(p=>rIn(p.registeredAt||p.date)).length;
+  const rDays = (()=>{
+    const out=[], end=new Date(rRange.to+'T00:00:00'), st=new Date(rRange.from+'T00:00:00');
+    if(isNaN(st.getTime())||isNaN(end.getTime())) return out;
+    for(let x=new Date(st); x<=end && out.length<40; x.setDate(x.getDate()+1)){
+      const k=isoD(x);
+      const dInv=finance.filter(f=>f.date===k);
+      out.push({
+        d:k,
+        ses:sessions.filter(s=>s.date===k).length,
+        apt:appointments.filter(a=>a.date===k).length,
+        inv:dInv.length,
+        paid:dInv.reduce((s,f)=>s+(f.paid||0),0),
+        exp:expenses.filter(e=>e.date===k).reduce((s,e)=>s+(e.amount||0),0),
+      });
+    }
+    return out;
+  })();
+  const rSesByTher = {}; rSes.forEach(s=>{ const k=s.therapistName||'غير محدد'; rSesByTher[k]=(rSesByTher[k]||0)+1; });
+  const rTherRows  = Object.entries(rSesByTher).sort((a,b)=>b[1]-a[1]);
+  const rExpByCat  = {}; rExp.forEach(e=>{ const c=e.category||'أخرى'; rExpByCat[c]=(rExpByCat[c]||0)+(e.amount||0); });
+  const rExpRows   = Object.entries(rExpByCat).sort((a,b)=>b[1]-a[1]);
+  const rKindLabel = {daily:'يومي', weekly:'أسبوعي', monthly:'شهري'}[rKind];
+
+  const printPeriodic = () => {
+    const w = window.open('','_blank');
+    if(!w){ alert('فعّل النوافذ المنبثقة لعرض التقرير.'); return; }
+    const tr = (cells)=>'<tr>'+cells.map(c=>`<td>${c}</td>`).join('')+'</tr>';
+    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير ${rKindLabel} — ${rRange.label}</title>
+<style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:28px;color:#1e293b;max-width:900px;margin:auto}
+.h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:22px;border-radius:14px;margin-bottom:18px}
+.h h1{font-size:21px}.h p{opacity:.9;font-size:13px;margin-top:4px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
+.c{border:1px solid #e2e8f0;border-radius:10px;padding:12px;text-align:center}.c .v{font-size:17px;font-weight:800}.c .l{font-size:11px;color:#64748b;margin-top:3px}
+h2{font-size:15px;color:#0B3D5C;border-right:4px solid #B8893A;padding-right:10px;margin:20px 0 9px}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 10px;border:1px solid #e2e8f0;font-size:12.5px;text-align:right}th{background:#f8fafc;font-weight:700}
+.foot{margin-top:26px;text-align:center;font-size:12px;color:#94a3b8}
+@media print{.noprint{display:none}}</style></head><body>
+<div class="h"><h1>🧾 تقرير ${rKindLabel} — ${settings.clinicName||'Motion Clinic'}</h1><p>${rRange.label} • صدر في ${new Date().toLocaleDateString('ar-EG')}</p></div>
+<div class="cards">
+  <div class="c"><div class="v" style="color:#7c3aed">${rSes.length}</div><div class="l">عدد الجلسات</div></div>
+  <div class="c"><div class="v" style="color:#0284c7">${rInv.length}</div><div class="l">عدد الفواتير</div></div>
+  <div class="c"><div class="v" style="color:#059669">${fmt(rPaid)}</div><div class="l">المحصّل (${cur})</div></div>
+  <div class="c"><div class="v" style="color:#dc2626">${fmt(rExpTot)}</div><div class="l">المصروفات (${cur})</div></div>
+</div>
+<h2>الملخّص</h2><table>
+${tr(['المواعيد', rApt.length, 'حضر: '+rAttended+' • تخلّف: '+rNoShow])}
+${tr(['مرضى جدد', rNewPat, ''])}
+${tr(['إجمالي الفواتير', fmt(rBilled)+' '+cur, ''])}
+${tr(['الخصومات', fmt(rDisc)+' '+cur, ''])}
+${tr(['المتبقي (ذمم)', fmt(rRem)+' '+cur, ''])}
+${tr(['صافي الربح', fmt(rNet)+' '+cur, ''])}
+</table>
+<h2>التفصيل اليومي</h2><table><tr><th>التاريخ</th><th>جلسات</th><th>مواعيد</th><th>فواتير</th><th>محصّل</th><th>مصروف</th></tr>
+${rDays.map(x=>tr([x.d,x.ses,x.apt,x.inv,fmt(x.paid),fmt(x.exp)])).join('')||'<tr><td colspan=6 style="text-align:center;color:#888">—</td></tr>'}
+</table>
+<h2>الجلسات حسب المعالج</h2><table><tr><th>المعالج</th><th>عدد الجلسات</th></tr>
+${rTherRows.map(([k,v])=>tr([k,v])).join('')||'<tr><td colspan=2 style="text-align:center;color:#888">لا جلسات</td></tr>'}
+</table>
+<h2>المصروفات حسب الفئة</h2><table><tr><th>الفئة</th><th>المبلغ</th></tr>
+${rExpRows.map(([k,v])=>tr([k,fmt(v)+' '+cur])).join('')||'<tr><td colspan=2 style="text-align:center;color:#888">لا مصروفات</td></tr>'}
+</table>
+<h2>الفواتير</h2><table><tr><th>رقم</th><th>التاريخ</th><th>المريض</th><th>الخدمة</th><th>الإجمالي</th><th>مدفوع</th><th>متبقي</th><th>الحالة</th></tr>
+${rInv.map(f=>tr([f.id,f.date,f.patientName||'—',f.serviceLabel||'—',fmt(f.total||0),fmt(f.paid||0),fmt(f.remaining||0),f.status||''])).join('')||'<tr><td colspan=8 style="text-align:center;color:#888">لا فواتير</td></tr>'}
+</table>
+<div class="foot">${settings.clinicName||'Motion Clinic'} — ${settings.phone||''}</div>
+<div class="noprint" style="text-align:center;margin-top:18px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 28px;border-radius:10px;font-size:15px;font-family:Cairo;cursor:pointer;font-weight:700">🖨️ طباعة / حفظ PDF</button></div>
+</body></html>`);
+    w.document.close();
+  };
 
   // — تقرير مالي قابل للطباعة —
   const printReport = () => {
@@ -4513,7 +4621,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
       </div>
 
       <div className="tabs-nav">
-        {[['invoices','📋 الفواتير'],['receivables','💳 الذمم'],['expenses','💸 المصروفات'],['reports','📊 التحليلات'],['audit','🔍 المراجعة'+((errCount+warnCount)>0?` (${errCount+warnCount})`:'')]].map(([k,l])=>(
+        {[['invoices','📋 الفواتير'],['receivables','💳 الذمم'],['expenses','💸 المصروفات'],['periodic','🧾 التقارير الدورية'],['reports','📊 التحليلات'],['audit','🔍 المراجعة'+((errCount+warnCount)>0?` (${errCount+warnCount})`:'')]].map(([k,l])=>(
           <button key={k} className={`tab-btn ${tab===k?'active':''}`} onClick={()=>setTab(k)}>{l}</button>
         ))}
       </div>
@@ -4634,6 +4742,172 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
             </tbody>
           </table>
           {expP.length===0&&<div className="empty-state"><div className="icon">💸</div><h3>لا مصروفات في {periodLabel}</h3></div>}
+        </div>
+      )}
+
+      {tab==='periodic'&&(
+        <div style={{display:'flex',flexDirection:'column',gap:16}}>
+          {/* شريط التحكم */}
+          <div className="card">
+            <div className="card-body" style={{display:'flex',flexWrap:'wrap',gap:10,alignItems:'center'}}>
+              <div style={{display:'flex',gap:6}}>
+                {[['daily','📅 يومي'],['weekly','🗓️ أسبوعي'],['monthly','📆 شهري']].map(([k,l])=>(
+                  <button key={k} onClick={()=>setRKind(k)} style={{
+                    fontSize:13,fontWeight:700,padding:'7px 16px',borderRadius:20,cursor:'pointer',border:'1px solid var(--border)',
+                    background:rKind===k?'var(--primary)':'var(--card)',color:rKind===k?'#fff':'var(--text-mid)'
+                  }}>{l}</button>
+                ))}
+              </div>
+              <button className="btn btn-sm" onClick={()=>shiftR(-1)}>‹ السابق</button>
+              <input className="input" type="date" value={rAnchor} onChange={e=>setRAnchor(e.target.value)} style={{width:170}}/>
+              <button className="btn btn-sm" onClick={()=>shiftR(1)}>التالي ›</button>
+              <button className="btn btn-sm" onClick={()=>setRAnchor(today())}>اليوم</button>
+              <span style={{fontWeight:800,color:'var(--primary)',fontSize:13.5}}>{rRange.label}</span>
+              <button className="btn btn-primary btn-sm" style={{marginRight:'auto'}} onClick={printPeriodic}>🖨️ طباعة التقرير</button>
+            </div>
+          </div>
+
+          {/* مؤشرات المدة */}
+          <div className="stats-grid" style={{gridTemplateColumns:'repeat(4,1fr)'}}>
+            {[
+              ['🔄 عدد الجلسات', rSes.length, 'var(--purple)', 'مواعيد: '+rApt.length+' · حضر '+rAttended+' · تخلّف '+rNoShow],
+              ['📋 عدد الفواتير', rInv.length, 'var(--blue)', 'إجمالي '+fmt(rBilled)+' '+cur],
+              ['💰 المحصّل', fmt(rPaid)+' '+cur, 'var(--green)', 'متبقٍ '+fmt(rRem)+' '+cur],
+              ['💸 المصروفات', fmt(rExpTot)+' '+cur, 'var(--red)', 'عدد '+rExp.length],
+            ].map(([l,v,c,sub],i)=>(
+              <div key={i} className="stat-card"><div className="stat-content">
+                <h3 style={{color:c,fontSize:18}}>{v}</h3><p>{l}</p>
+                {sub&&<span style={{fontSize:11,color:'var(--text-light)',fontWeight:700}}>{sub}</span>}
+              </div></div>
+            ))}
+          </div>
+          <div className="stats-grid" style={{gridTemplateColumns:'repeat(3,1fr)'}}>
+            {[
+              ['📈 صافي الربح', fmt(rNet)+' '+cur, rNet>=0?'var(--green)':'var(--red)'],
+              ['🏷️ الخصومات', fmt(rDisc)+' '+cur, 'var(--accent)'],
+              ['🆕 مرضى جدد', rNewPat, 'var(--primary)'],
+            ].map(([l,v,c],i)=>(
+              <div key={i} className="stat-card"><div className="stat-content">
+                <h3 style={{color:c,fontSize:18}}>{v}</h3><p>{l}</p>
+              </div></div>
+            ))}
+          </div>
+
+          {/* التفصيل اليومي */}
+          <div className="card">
+            <div className="card-header"><h3>📊 التفصيل اليومي</h3></div>
+            <table className="data-table">
+              <thead><tr><th>التاريخ</th><th>جلسات</th><th>مواعيد</th><th>فواتير</th><th>محصّل</th><th>مصروف</th><th>صافي</th></tr></thead>
+              <tbody>
+                {rDays.map(x=>(
+                  <tr key={x.d}>
+                    <td style={{fontWeight:700}}>{x.d}</td>
+                    <td>{x.ses}</td><td>{x.apt}</td><td>{x.inv}</td>
+                    <td style={{color:'var(--green)',fontWeight:700}}>{fmt(x.paid)}</td>
+                    <td style={{color:'var(--red)',fontWeight:700}}>{fmt(x.exp)}</td>
+                    <td style={{color:(x.paid-x.exp)>=0?'var(--green)':'var(--red)',fontWeight:800}}>{fmt(x.paid-x.exp)}</td>
+                  </tr>
+                ))}
+                {rDays.length>0&&(
+                  <tr style={{background:'var(--surface)',fontWeight:800}}>
+                    <td>الإجمالي</td>
+                    <td>{rSes.length}</td><td>{rApt.length}</td><td>{rInv.length}</td>
+                    <td style={{color:'var(--green)'}}>{fmt(rPaid)}</td>
+                    <td style={{color:'var(--red)'}}>{fmt(rExpTot)}</td>
+                    <td style={{color:rNet>=0?'var(--green)':'var(--red)'}}>{fmt(rNet)}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="grid-2">
+            {/* الجلسات حسب المعالج */}
+            <div className="card">
+              <div className="card-header"><h3>🧑‍⚕️ الجلسات حسب المعالج</h3></div>
+              <div className="card-body">
+                {rTherRows.length===0&&<div style={{color:'var(--text-light)',fontSize:13}}>لا جلسات في هذه المدة.</div>}
+                {rTherRows.map(([k,v])=>(
+                  <div key={k} style={{marginBottom:10}}>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,marginBottom:4}}><span>{k}</span><span>{v} جلسة</span></div>
+                    <div style={{height:8,background:'var(--surface)',borderRadius:6,overflow:'hidden'}}>
+                      <div style={{height:'100%',width:(rSes.length>0?Math.round(v/rSes.length*100):0)+'%',background:'var(--purple)'}}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* المصروفات حسب الفئة */}
+            <div className="card">
+              <div className="card-header"><h3>💸 المصروفات حسب الفئة</h3></div>
+              <div className="card-body">
+                {rExpRows.length===0&&<div style={{color:'var(--text-light)',fontSize:13}}>لا مصروفات في هذه المدة.</div>}
+                {rExpRows.map(([k,v])=>(
+                  <div key={k} style={{marginBottom:10}}>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,marginBottom:4}}><span>{k}</span><span>{fmt(v)} {cur}</span></div>
+                    <div style={{height:8,background:'var(--surface)',borderRadius:6,overflow:'hidden'}}>
+                      <div style={{height:'100%',width:(rExpTot>0?Math.round(v/rExpTot*100):0)+'%',background:'var(--red)'}}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* فواتير المدة */}
+          <div className="card">
+            <div className="card-header"><h3>📋 فواتير المدة ({rInv.length})</h3></div>
+            <table className="data-table">
+              <thead><tr><th>رقم</th><th>التاريخ</th><th>المريض</th><th>الخدمة</th><th>الإجمالي</th><th>مدفوع</th><th>متبقي</th><th>الحالة</th></tr></thead>
+              <tbody>
+                {rInv.map(f=>(
+                  <tr key={f.id}>
+                    <td style={{fontWeight:700}}>{f.id}</td><td>{f.date}</td><td>{f.patientName||'—'}</td><td>{f.serviceLabel||'—'}</td>
+                    <td>{fmt(f.total||0)}</td>
+                    <td style={{color:'var(--green)',fontWeight:700}}>{fmt(f.paid||0)}</td>
+                    <td style={{color:(f.remaining||0)>0?'var(--red)':'var(--text-light)',fontWeight:700}}>{fmt(f.remaining||0)}</td>
+                    <td><StatusBadge status={f.status}/></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {rInv.length===0&&<div className="empty-state" style={{padding:20}}><p>لا فواتير في هذه المدة.</p></div>}
+          </div>
+
+          {/* مصروفات المدة */}
+          <div className="card">
+            <div className="card-header"><h3>💸 مصروفات المدة ({rExp.length})</h3></div>
+            <table className="data-table">
+              <thead><tr><th>التاريخ</th><th>البيان</th><th>الفئة</th><th>المبلغ</th></tr></thead>
+              <tbody>
+                {rExp.map(e=>(
+                  <tr key={e.id}>
+                    <td>{e.date}</td><td style={{fontWeight:700}}>{e.title||e.desc||e.note||'—'}</td><td>{e.category||'أخرى'}</td>
+                    <td style={{color:'var(--red)',fontWeight:700}}>{fmt(e.amount||0)} {cur}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {rExp.length===0&&<div className="empty-state" style={{padding:20}}><p>لا مصروفات في هذه المدة.</p></div>}
+          </div>
+
+          {/* جلسات المدة */}
+          <div className="card">
+            <div className="card-header"><h3>🔄 جلسات المدة ({rSes.length})</h3></div>
+            <table className="data-table">
+              <thead><tr><th>التاريخ</th><th>المريض</th><th>النوع</th><th>المدة</th><th>المعالج</th><th>VAS</th></tr></thead>
+              <tbody>
+                {rSes.map(s=>{ const p=patients.find(x=>String(x.id)===String(s.patientId)); return(
+                  <tr key={s.id}>
+                    <td>{s.date}</td><td style={{fontWeight:700}}>{p?p.name:(s.patientName||'—')}</td>
+                    <td>{s.type||'—'}</td><td>{s.duration?s.duration+' د':'—'}</td><td>{s.therapistName||'—'}</td>
+                    <td>{(s.vasStart!=null&&s.vasEnd!=null)?`${s.vasStart} → ${s.vasEnd}`:'—'}</td>
+                  </tr>
+                ); })}
+              </tbody>
+            </table>
+            {rSes.length===0&&<div className="empty-state" style={{padding:20}}><p>لا جلسات في هذه المدة.</p></div>}
+          </div>
         </div>
       )}
 
