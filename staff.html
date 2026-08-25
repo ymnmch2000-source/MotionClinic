@@ -1481,6 +1481,24 @@ function SF({label,value,onChange,options=[]}){
 function TA({label,value,onChange,placeholder='',rows=3}){
   return(<Field label={label}><textarea className="input" value={value||''} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={rows}/></Field>);
 }
+// أسماء الكادر — المصدر الوحيد: صفحة «فريق العمل». يحتفظ بالقيمة القديمة إن لم تعد ضمن الكادر.
+function staffNameOptions(staff, settings, current){
+  const names = (staff||[]).filter(s=>s.status!=='متوقف').map(s=>s.name).filter(Boolean);
+  return [...new Set([...names, settings&&settings.therapistName, current].filter(Boolean))];
+}
+function StaffSelect({label,value,onChange,placeholder='-- اختر من فريق العمل --'}){
+  const {staff,settings} = useClinic();
+  const opts = staffNameOptions(staff, settings, value);
+  return(
+    <Field label={label}>
+      <select className="input" value={value||''} onChange={e=>onChange(e.target.value)}>
+        <option value="">{placeholder}</option>
+        {opts.map(n=><option key={n} value={n}>{n}</option>)}
+      </select>
+      {opts.length===0 && <div style={{fontSize:11,color:'var(--text-light)',marginTop:4}}>لا يوجد كادر — أضِف الموظفين من صفحة «فريق العمل».</div>}
+    </Field>
+  );
+}
 
 function StatusBadge({status}){
   const map = {
@@ -1867,7 +1885,7 @@ function PatientModal({patient,onClose}){
   const [form,setForm] = useState(patient||{
     name:'',phone:'',dob:'',gender:'ذكر',bloodType:'',allergy:'لا يوجد',
     job:'',source:'',address:'',status:'نشط',notes:'',emergency:'',email:'',
-    recommendations:[],
+    assignedTherapist:'', recommendations:[],
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const save=()=>{
@@ -1907,6 +1925,10 @@ function PatientModal({patient,onClose}){
           <div className="form-row">
             <TF label="البريد الإلكتروني" value={form.email} onChange={v=>f('email',v)} type="email"/>
             <SF label="حالة المريض" value={form.status} onChange={v=>f('status',v)} options={['نشط','متوقف','منتهي العلاج']}/>
+          </div>
+          <div className="form-row">
+            <StaffSelect label="🩺 المعالج المسؤول" value={form.assignedTherapist} onChange={v=>f('assignedTherapist',v)}/>
+            <div/>
           </div>
           <TA label="ملاحظات إضافية" value={form.notes} onChange={v=>f('notes',v)} placeholder="معلومات إضافية عن المريض..."/>
           <div className="form-group" style={{marginTop:10}}>
@@ -2091,6 +2113,7 @@ function PatientProfile({patientId, navigate}){
               {patient.bloodType&&<span>🩸 <strong>{patient.bloodType}</strong></span>}
               {patient.job&&<span>💼 <strong>{patient.job}</strong></span>}
               {patient.source&&<span>📣 <strong>{patient.source}</strong></span>}
+              {patient.assignedTherapist&&<span>🩺 المعالج المسؤول: <strong>{patient.assignedTherapist}</strong></span>}
             </div>
           </div>
           <div style={{display:'flex',flexDirection:'column',gap:8,flexShrink:0}}>
@@ -2964,7 +2987,7 @@ function RecordModal({patientId,record,onClose}){
                 <TF label="موعد المراجعة" type="date" value={form.nextReview} onChange={v=>f('nextReview',v)}/>
                 <SF label="حالة الخطة" value={form.status} onChange={v=>f('status',v)} options={['قيد التنفيذ','منتهية','معلقة']}/>
               </div>
-              <TF label="المعالج المسؤول" value={form.therapistName} onChange={v=>f('therapistName',v)}/>
+              <StaffSelect label="المعالج المسؤول" value={form.therapistName} onChange={v=>f('therapistName',v)}/>
             </div>
           )}
         </div>
@@ -3031,7 +3054,7 @@ function SessionModal({patientId, patient, session, onClose}){
           </div>
           <div className="form-row">
             <TF label="مدة الجلسة (دقيقة)" type="number" value={form.duration} onChange={v=>f('duration',+v)}/>
-            <TF label="المعالج" value={form.therapistName} onChange={v=>f('therapistName',v)}/>
+            <StaffSelect label="المعالج" value={form.therapistName} onChange={v=>f('therapistName',v)}/>
           </div>
           <div className="grid-2">
             <Field label={`VAS قبل الجلسة: ${form.vasStart}/10`}>
@@ -3080,14 +3103,18 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
   const [form,setForm] = useState(appointment||{
     patientId:patientId||'', patientName:patient?.name||'',
     date:today(), time:'10:00', service:'', status:'confirmed',
-    notes:'', therapist:settings.therapistName,
+    notes:'', therapist:(patient?.assignedTherapist)||settings.therapistName,
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const pickPatient=(pid)=>{
+    const px = patients.find(x=>x.id===pid);
+    setForm(p=>({...p, patientId:pid, patientName:px?.name||'', therapist:(px&&px.assignedTherapist)||p.therapist||settings.therapistName}));
+  };
   const save=()=>{
     if(!form.date||!form.time){alert('التاريخ والوقت مطلوبان');return;}
     if(!form.patientId){alert('المريض مطلوب');return;}
     const p = patients.find(x=>x.id===form.patientId);
-    const data={...form,patientName:p?.name||form.patientName};
+    const data={...form,patientName:p?.name||form.patientName,therapist:form.therapist||(p&&p.assignedTherapist)||settings.therapistName};
     if(isEdit) updateAppointment(appointment.id,data); else addAppointment({...data,id:nextId('APT')});
     onClose();
   };
@@ -3098,7 +3125,7 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
         <div className="modal-body">
           {!patientId&&(
             <Field label="المريض">
-              <select className="input" value={form.patientId} onChange={e=>f('patientId',e.target.value)}>
+              <select className="input" value={form.patientId} onChange={e=>pickPatient(e.target.value)}>
                 <option value="">-- اختر المريض --</option>
                 {patients.map(p=><option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}
               </select>
@@ -3110,7 +3137,7 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
           </div>
           <TF label="الخدمة / نوع الموعد" value={form.service} onChange={v=>f('service',v)} placeholder="مثال: جلسة علاج طبيعي"/>
           <div className="form-row">
-            <TF label="المعالج" value={form.therapist} onChange={v=>f('therapist',v)}/>
+            <StaffSelect label="المعالج" value={form.therapist} onChange={v=>f('therapist',v)}/>
             <SF label="الحالة" value={form.status} onChange={v=>f('status',v)} options={['confirmed','pending','completed','cancelled','missed']}/>
           </div>
           <TA label="ملاحظات" value={form.notes} onChange={v=>f('notes',v)} rows={2}/>
@@ -3239,7 +3266,7 @@ function InBodyModal({patientId, patient, record, onClose}){
         <div className="modal-body">
           <div className="form-row">
             <TF label="تاريخ القياس" type="date" value={form.date} onChange={v=>f('date',v)}/>
-            <TF label="المعالج" value={form.therapistName} onChange={v=>f('therapistName',v)}/>
+            <StaffSelect label="المعالج" value={form.therapistName} onChange={v=>f('therapistName',v)}/>
           </div>
           <div style={{background:'var(--surface)',borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontWeight:800,fontSize:14,marginBottom:12,color:'var(--primary)'}}>📊 نتائج القياس</div>
@@ -4085,6 +4112,7 @@ function CalendarPage(){
   const [modal,setModal] = useState(null);
   const [view,setView] = useState('month'); // month | week
   const [weekRef,setWeekRef] = useState(new Date());
+  const [filterTherapist,setFilterTherapist] = useState('');
 
   const year = month.getFullYear();
   const mon  = month.getMonth();
@@ -4098,7 +4126,10 @@ function CalendarPage(){
   // — لون ثابت مميّز لكل طبيب/معالج (يسهّل قراءة التقويم) —
   const DOC_PALETTE = ['#2563eb','#059669','#d97706','#db2777','#7c3aed','#0891b2','#ca8a04','#dc2626','#4f46e5','#15803d','#9333ea','#0d9488'];
   const therapistColor = (name) => { const s=String(name||'غير محدد'); let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return DOC_PALETTE[h%DOC_PALETTE.length]; };
-  const therapists = [...new Set(appointments.map(a=>a.therapist||'غير محدد').filter(Boolean))];
+  const patMap = Object.fromEntries(patients.map(p=>[p.id,p]));
+  const apptTher = (a)=> a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || 'غير محدد';
+  const therapists = [...new Set(appointments.map(apptTher).filter(Boolean))];
+  const shown = (a)=> !filterTherapist || apptTher(a)===filterTherapist;
 
   // — أيام الأسبوع الحالي (يبدأ بالأحد) —
   const weekStart = new Date(weekRef); weekStart.setDate(weekRef.getDate()-weekRef.getDay()); weekStart.setHours(0,0,0,0);
@@ -4119,13 +4150,14 @@ function CalendarPage(){
         </div>
       </div>
       {therapists.length>0 && (
-        <div style={{display:'flex',flexWrap:'wrap',gap:12,alignItems:'center',padding:'9px 14px',marginBottom:12,background:'var(--surface)',borderRadius:10,fontSize:12.5}}>
-          <span style={{fontWeight:800,color:'var(--text-mid)'}}>👨‍⚕️ الأطباء:</span>
-          {therapists.map(t=>(
-            <span key={t} style={{display:'inline-flex',alignItems:'center',gap:6,fontWeight:700,color:'var(--text-mid)'}}>
-              <span style={{width:13,height:13,borderRadius:4,background:therapistColor(t)}}/>{t}
-            </span>
-          ))}
+        <div style={{display:'flex',flexWrap:'wrap',gap:10,alignItems:'center',padding:'9px 14px',marginBottom:12,background:'var(--surface)',borderRadius:10,fontSize:12.5}}>
+          <span style={{fontWeight:800,color:'var(--text-mid)'}}>👨‍⚕️ المعالج:</span>
+          <button onClick={()=>setFilterTherapist('')} style={{cursor:'pointer',border:'none',borderRadius:20,padding:'4px 12px',fontWeight:800,fontSize:12,background:!filterTherapist?'var(--primary)':'#e5e7eb',color:!filterTherapist?'#fff':'#475569'}}>الكل</button>
+          {therapists.map(t=>{ const on=filterTherapist===t; const c=therapistColor(t); return (
+            <button key={t} onClick={()=>setFilterTherapist(on?'':t)} style={{cursor:'pointer',display:'inline-flex',alignItems:'center',gap:6,fontWeight:700,border:'1px solid '+c,borderRadius:20,padding:'4px 12px',background:on?c:c+'18',color:on?'#fff':c}}>
+              <span style={{width:11,height:11,borderRadius:4,background:on?'#fff':c}}/>{t}
+            </button>
+          ); })}
         </div>
       )}
       {view==='week' && (
@@ -4150,13 +4182,13 @@ function CalendarPage(){
                   <div style={{fontSize:11,color:'var(--text-light)',textAlign:'left',padding:'4px 6px',fontWeight:700}}>{String(h).padStart(2,'0')}:00</div>
                   {weekDays.map((d,di)=>{
                     const ds=fmtDay(d);
-                    const cellApts=appointments.filter(a=>a.date===ds && parseInt((a.time||'0').split(':')[0],10)===h);
+                    const cellApts=appointments.filter(a=>a.date===ds && parseInt((a.time||'0').split(':')[0],10)===h && shown(a));
                     return <div key={di} style={{minHeight:46,border:'1px solid var(--border)',borderRadius:6,padding:2}}>
-                      {cellApts.map(a=>{ const dc=therapistColor(a.therapist||'غير محدد'); return (
+                      {cellApts.map(a=>{ const dc=therapistColor(apptTher(a)); return (
                         <div key={a.id} style={{fontSize:10,padding:'2px 4px',borderRadius:4,marginBottom:2,cursor:'pointer',
                           background:dc+'22',color:dc,fontWeight:700,borderRight:`3px solid ${dc}`,borderLeft:`3px solid ${statusColors[a.status]}`,
                           overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
-                          title={`${a.time} — ${a.patientName} — د. ${a.therapist||'غير محدد'} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
+                          title={`${a.time} — ${a.patientName} — د. ${apptTher(a)} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
                           {a.time} {a.patientName}
                         </div>
                       ); })}
@@ -4184,7 +4216,7 @@ function CalendarPage(){
             {Array(daysInMonth).fill(null).map((_,i)=>{
               const day = i+1;
               const dayStr = `${year}-${monthStr}-${String(day).padStart(2,'0')}`;
-              const dayApts = appointments.filter(a=>a.date===dayStr);
+              const dayApts = appointments.filter(a=>a.date===dayStr && shown(a));
               const isToday = dayStr===today();
               return(
                 <div key={day} style={{
@@ -4193,12 +4225,12 @@ function CalendarPage(){
                   borderColor:isToday?'var(--primary)':'var(--border)',
                 }}>
                   <div style={{fontSize:13,fontWeight:isToday?900:600,color:isToday?'var(--primary)':'var(--text-mid)',marginBottom:4}}>{day}</div>
-                  {dayApts.map(a=>{ const dc=therapistColor(a.therapist||'غير محدد'); return (
+                  {dayApts.map(a=>{ const dc=therapistColor(apptTher(a)); return (
                     <div key={a.id} style={{
                       fontSize:10.5,padding:'2px 5px',borderRadius:4,marginBottom:2,
                       background:dc+'22',color:dc,fontWeight:700,borderRight:`3px solid ${dc}`,
                       cursor:'pointer',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
-                    }} title={`${a.patientName} — د. ${a.therapist||'غير محدد'} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
+                    }} title={`${a.patientName} — د. ${apptTher(a)} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
                       {a.time} {a.patientName}
                     </div>
                   ); })}
@@ -5889,7 +5921,7 @@ function SettingsPage(){
               <TF label="أيام العمل" value={form.days} onChange={v=>f('days',v)}/>
             </div>
             <div className="form-row">
-              <TF label="اسم المعالج الرئيسي" value={form.therapistName} onChange={v=>f('therapistName',v)}/>
+              <StaffSelect label="اسم المعالج الرئيسي" value={form.therapistName} onChange={v=>f('therapistName',v)}/>
               <TF label="الرقم الضريبي / السجل التجاري" value={form.taxNum} onChange={v=>f('taxNum',v)}/>
             </div>
             <TF label="العملة" value={form.currency} onChange={v=>f('currency',v)} placeholder="ل.س"/>
@@ -6402,7 +6434,7 @@ create table if not exists mc_patients (
   gender text, "bloodType" text, allergy text,
   job text, source text, address text,
   emergency text, email text, status text,
-  notes text, "registeredAt" text,
+  notes text, "registeredAt" text, "assignedTherapist" text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -7521,6 +7553,8 @@ const TASK_ROLES = [
   {key:'housekeeping', label:'النظافة',             icon:'🧽'},
   {key:'physio',       label:'العلاج الفيزيائي',    icon:'🧑‍⚕️'},
 ];
+// ربط دور الموظف في «فريق العمل» بدوره في قوائم المهام
+const STAFF_ROLE_MAP = {'مدير':'manager','إداري':'manager','استقبال':'reception','محاسبة':'accounting','معالج':'physio','معالج رئيسي':'physio','سوشيال ميديا':'social','النظافة':'housekeeping'};
 const TASK_TEMPLATES = {
   manager: {
     daily:['مراجعة عدد الجلسات ومرضى اليوم (جدد/قدامى)','تسجيل إجمالي الدخل اليومي','تقييم نسبة النظافة','رصد أسباب غياب المرضى','تقييم الالتزام بالمواعيد وخدمة العملاء ورد فعل المرضى'],
@@ -7824,11 +7858,21 @@ function TaskCenterPage(){
     setNewTask('');
   };
   const delCustom = (id) => { if(confirm('حذف هذه المهمة من القائمة؟')) deleteTask(id); };
+  // اختيار الموظف من «فريق العمل» → يضبط دوره تلقائياً في قوائم المهام
+  const me = staff.find(s=>s.name===myName);
+  const pickStaff = (name) => {
+    setMyName(name);
+    const s = staff.find(x=>x.name===name);
+    const k = s && STAFF_ROLE_MAP[s.role];
+    if(k) setRole(k);
+  };
   const doneCount = items.reduce((n,it)=> n + (recFor(it.key)?.done?1:0), 0);
   const pct = items.length>0 ? Math.round(doneCount/items.length*100) : 0;
 
-  // مرضى اليوم للمعالج (حسب اسم المعالج على الموعد)
-  const myApts = appointments.filter(a=>a.date===todayStr && (!myName || (a.therapist||'')===myName)).sort((a,b)=>String(a.time).localeCompare(String(b.time)));
+  // مرضى اليوم للمعالج (حسب المعالج المسؤول عن المريض أو المعالج على الموعد)
+  const patMap = Object.fromEntries(patients.map(p=>[p.id,p]));
+  const apptTher = (a)=> a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || '';
+  const myApts = appointments.filter(a=>a.date===todayStr && (!myName || apptTher(a)===myName)).sort((a,b)=>String(a.time).localeCompare(String(b.time)));
   const markAtt = (a,status)=>updateAppointment(a.id,{...a,status});
   const roleObj = TASK_ROLES.find(r=>r.key===role)||{};
 
@@ -7845,10 +7889,20 @@ function TaskCenterPage(){
               {TASK_ROLES.map(r=><option key={r.key} value={r.key}>{r.icon} {r.label}</option>)}
             </select>
           </Field>
-          <Field label="اسم الموظف">
-            <input className="input" list="staffNames" value={myName} onChange={e=>setMyName(e.target.value)} placeholder="اكتب اسمك"/>
-            <datalist id="staffNames">{staff.map(s=><option key={s.id} value={s.name}/>)}</datalist>
+          <Field label="اسم الموظف (من فريق العمل)">
+            <select className="input" value={myName} onChange={e=>pickStaff(e.target.value)}>
+              <option value="">-- اختر من فريق العمل --</option>
+              {staffNameOptions(staff,settings,myName).map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
           </Field>
+          {me && (
+            <div style={{display:'flex',flexWrap:'wrap',gap:14,alignItems:'center',padding:'8px 14px',background:'var(--surface)',borderRadius:10,fontSize:12.5,fontWeight:700,color:'var(--text-mid)'}}>
+              <span>🏷️ <strong>{me.role||'—'}</strong></span>
+              {me.specialty&&<span>🎯 {me.specialty}</span>}
+              {me.phone&&<span>📞 {me.phone}</span>}
+              <StatusBadge status={me.status}/>
+            </div>
+          )}
         </div>
       </div>
 
