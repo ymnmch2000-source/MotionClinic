@@ -550,6 +550,9 @@ const sb = {
 // ══════════════════════════════════════════════════
 // جدول العمليات المعلقة (pending offline)
 const PENDING_KEY = 'mc6_pending_ops';
+// أرشيف العمليات التي فشلت نهائياً (حتى لا تبقى معلّقة للأبد وتُجمِّد العدّاد)
+const FAILED_KEY  = 'mc6_failed_ops';
+const MAX_OP_TRIES = 6;
 
 const getPending = () => { try { return JSON.parse(localStorage.getItem(PENDING_KEY)||'[]'); } catch { return []; } };
 const savePending = (ops) => localStorage.setItem(PENDING_KEY, JSON.stringify(ops));
@@ -938,7 +941,9 @@ function ClinicProvider({ children }) {
   const [syncStatus,  setSyncStatus] = useState('idle'); // idle | syncing | online | offline | error
   const [lastSync,    setLastSync]   = useState(() => ls('mc6_last_sync', null));
   const [pendingCount,setPendingCount] = useState(() => getPending().length);
+  const [syncError,   setSyncError]  = useState('');   // آخر سبب فشل في الرفع (لتشخيص التعليق)
   const isOnline = useRef(navigator.onLine);
+  const flushingRef = useRef(false);                    // يمنع تشغيل عمليتي رفع متزامنتين
 
   // ── Persist locally (always — offline safety net) — IndexedDB دائم + localStorage إقلاع ──
   useEffect(()=>{persistKV('mc6_settings',    settings);},   [settings]);
@@ -1011,7 +1016,8 @@ function ClinicProvider({ children }) {
 
   // ── Push a single record to Supabase ──
   const pushToSupabase = useCallback(async (table, op, data) => {
-    if (!isOnline.current) {
+    // نعتمد navigator.onLine مباشرةً (المرجع قد يكون قديماً فتُحتجز كل العمليات بلا داعٍ)
+    if (!navigator.onLine) {
       queueOp({ table, op, data });
       setPendingCount(getPending().length);
       return false;
@@ -1020,41 +1026,71 @@ function ClinicProvider({ children }) {
       if (op === 'delete') await sb.delete(table, data.id);
       // لا نعيد ختم updated_at هنا — نحافظ على وقت التعديل الأصلي ليبقى LWW صحيحاً
       else await sb.upsert(table, data);
+      setSyncError('');
       return true;
     } catch(e) {
-      queueOp({ table, op, data });
+      const msg = (e && e.message) || String(e);
+      queueOp({ table, op, data, error: msg });
       setPendingCount(getPending().length);
+      setSyncError(msg);
       return false;
     }
   }, []);
 
   // ── Flush pending offline operations ──
+  // إصلاح "بقاء العمليات معلّقة": (1) دعم عمليات KV التي كانت تفشل دائماً،
+  // (2) دمج العمليات المكرّرة لنفس السجل، (3) حفظ سبب الفشل لعرضه،
+  // (4) إخراج العملية المستحيلة بعد MAX_OP_TRIES محاولات إلى الأرشيف حتى لا يتجمّد العدّاد.
   const flushPending = useCallback(async () => {
-    const ops = getPending();
-    if (!ops.length) return;
+    if (flushingRef.current) return;
+    let ops = getPending();
+    if (!ops.length) { setPendingCount(0); return; }
+    if (!navigator.onLine) { setSyncStatus('offline'); return; }
+    flushingRef.current = true;
     setSyncStatus('syncing');
-    const failed = [];
+
+    // دمج: يكفي آخر عملية لكل (جدول + معرّف) — يمنع تضخّم الطابور وتكرار الفشل
+    const seen = new Map();
+    for (const o of ops) {
+      const k = o.table + '|' + (o.op === 'kv' ? ('kv:' + (o.data && o.data.key)) : (o.op + ':' + (o.data && o.data.id)));
+      const prev = seen.get(k);
+      seen.set(k, prev ? { ...o, tries: Math.max(o.tries || 0, prev.tries || 0) } : o);
+    }
+    ops = [...seen.values()];
+
+    const failed = [], dropped = [];
+    let lastErr = '';
     for (const op of ops) {
       try {
-        if (op.op === 'delete') await sb.delete(op.table, op.data.id);
+        if (op.op === 'kv')          await sb.upsertKV(op.data.key, op.data.value);
+        else if (op.op === 'delete') await sb.delete(op.table, op.data.id);
         // نحافظ على updated_at الأصلي للعملية المؤجَّلة (لا نطمس تعديلاً أحدث على جهاز آخر)
-        else await sb.upsert(op.table, op.data);
-      } catch {
-        failed.push(op);
+        else                         await sb.upsert(op.table, op.data);
+      } catch(e) {
+        lastErr = (e && e.message) || String(e);
+        const tries = (op.tries || 0) + 1;
+        (tries >= MAX_OP_TRIES ? dropped : failed).push({ ...op, tries, error: lastErr });
       }
     }
     savePending(failed);
     setPendingCount(failed.length);
-    setSyncStatus(failed.length === 0 ? 'online' : 'error');
-    if (failed.length === 0) {
-      const now = new Date().toISOString();
-      setLastSync(now);
+    if (dropped.length) {
+      try {
+        const arch = JSON.parse(localStorage.getItem(FAILED_KEY) || '[]');
+        localStorage.setItem(FAILED_KEY, JSON.stringify([...arch, ...dropped].slice(-200)));
+      } catch(e) {}
     }
+    setSyncError(lastErr);
+    setSyncStatus(failed.length === 0 ? 'online' : 'error');
+    if (failed.length === 0) setLastSync(new Date().toISOString());
+    flushingRef.current = false;
   }, []);
 
   // ── Pull ALL data from Supabase (full sync) ──
-  const pullFromSupabase = useCallback(async () => {
-    if (!isOnline.current) { showToast('لا يوجد إنترنت — البيانات محلية', 'info'); return; }
+  // force === true → استرجاع كامل: تُستبدل النسخة المحلية بنسخة السحابة (يزيل أي تعليق/تعارض محلي)
+  const pullFromSupabase = useCallback(async (force) => {
+    const doForce = force === true;
+    if (!navigator.onLine) { showToast('لا يوجد إنترنت — البيانات محلية', 'info'); return; }
     if (pullingRef.current) return;      // سحب جارٍ بالفعل — تجنّب التعارض
     pullingRef.current = true;
     setSyncStatus('syncing');
@@ -1073,6 +1109,9 @@ function ClinicProvider({ children }) {
             if (rows && rows.length > 0) {
               // دمج: آخر تعديل يربح (LWW) + احترام شواهد الحذف (Tombstones)
               setter(local => {
+                // استرجاع كامل من السحابة — تجاهل النسخة المحلية تماماً
+                if (doForce) return rows.filter(r => !r.deleted)
+                  .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''));
                 const localMap = Object.fromEntries(local.map(r => [r.id, r]));
                 const merged = { ...localMap };
                 for (const cr of rows) {
@@ -1106,7 +1145,7 @@ function ClinicProvider({ children }) {
       const now = new Date().toISOString();
       setLastSync(now);
       setSyncStatus('online');
-      showToast('✅ تمت المزامنة مع Supabase');
+      showToast(doForce ? '✅ تم استرجاع كل البيانات من السحابة' : '✅ تمت المزامنة مع Supabase');
     } catch(e) {
       setSyncStatus('error');
       showToast('خطأ في المزامنة: ' + e.message, 'error');
@@ -1117,8 +1156,9 @@ function ClinicProvider({ children }) {
 
   // ── Push settings/categories to Supabase KV ──
   const pushKV = useCallback(async (key, value) => {
-    if (!isOnline.current) { queueOp({ table: 'mc_kv', op: 'kv', data: { key, value } }); return; }
-    try { await sb.upsertKV(key, value); } catch(e) {}
+    if (!navigator.onLine) { queueOp({ table: 'mc_kv', op: 'kv', data: { key, value } }); setPendingCount(getPending().length); return; }
+    try { await sb.upsertKV(key, value); }
+    catch(e) { queueOp({ table: 'mc_kv', op: 'kv', data: { key, value }, error: (e&&e.message)||'' }); setPendingCount(getPending().length); }
   }, []);
 
   // ── Realtime Subscriptions — التحديث الفوري على جميع الأجهزة ──
@@ -1196,9 +1236,15 @@ function ClinicProvider({ children }) {
       }
     }, 60000);
 
-    // مزامنة عند العودة للنافذة
+    // إعادة محاولة تلقائية للعمليات المعلّقة كل 25 ثانية — يمنع بقاءها معلّقة إلى الأبد
+    const retry = setInterval(() => {
+      if (navigator.onLine && getPending().length > 0) flushPending();
+    }, 25000);
+
+    // مزامنة عند العودة للنافذة (+ محاولة رفع ما هو معلّق)
     const onVisible = () => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
+        if (getPending().length > 0) flushPending();
         pullFromSupabase();
       }
     };
@@ -1214,6 +1260,7 @@ function ClinicProvider({ children }) {
     return () => {
       clearTimeout(timer);
       clearInterval(interval);
+      clearInterval(retry);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('online', onOnline);
       // إلغاء جميع اشتراكات Realtime عند تدمير المكوّن
@@ -1417,7 +1464,7 @@ function ClinicProvider({ children }) {
     settings, categories, patients, records, sessions, appointments, finance, expenses,
     inbody, notes, staff, inventory, hepLib, attendance, tasks, audit, toast, showToast,
     // Sync state
-    syncStatus, lastSync, pendingCount, pullFromSupabase, flushPending,
+    syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending,
     // Patient CRUD
     addPatient:patCRUD.add, updatePatient:patCRUD.update, deletePatient:patCRUD.delete,
     // Record CRUD
@@ -6087,7 +6134,7 @@ function CategoriesPage(){
 // ══════════════════════════════════════════════════
 function SettingsPage(){
   const {settings, updateSettings, exportBackup, importBackup, mergeImport, resetSystem, categories,
-         audit, syncStatus, lastSync, pendingCount, pullFromSupabase, flushPending} = useClinic();
+         audit, syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending} = useClinic();
   const [tab,setTab] = useState('clinic');
   const [importing,setImporting] = useState(false);
   const [auditFilter,setAuditFilter] = useState('');
@@ -6519,7 +6566,21 @@ function SettingsPage(){
                 <button className="btn btn-outline" onClick={flushPending} disabled={syncStatus==='syncing'||pendingCount===0}>
                   ⬆️ رفع التغييرات المعلقة ({pendingCount})
                 </button>
+                <button className="btn btn-outline" style={{borderColor:'var(--accent)',color:'var(--accent)'}} disabled={syncStatus==='syncing'}
+                  onClick={()=>{ if(confirm('استرجاع كامل: سيتم استبدال بيانات هذا الجهاز بنسخة السحابة.\nارفع أولاً أي تغييرات معلّقة إن أردت الاحتفاظ بها.\n\nمتابعة؟')) pullFromSupabase(true); }}>
+                  ☁️ استرجاع كل البيانات من السحابة
+                </button>
+                <button className="btn btn-outline" style={{borderColor:'var(--red)',color:'var(--red)'}} disabled={pendingCount===0}
+                  onClick={()=>{ if(confirm('تفريغ طابور العمليات المعلّقة على هذا الجهاز فقط.\nالبيانات في السحابة لن تتأثر — استخدمه إذا بقي العدّاد عالقاً.\n\nمتابعة؟')){ savePending([]); location.reload(); } }}>
+                  🧹 تفريغ الطابور العالق
+                </button>
               </div>
+              {syncError && (
+                <div className="alert alert-warning" style={{marginTop:12}}>
+                  ⚠️ <strong>سبب تعليق الرفع:</strong> <span style={{fontFamily:'monospace',fontSize:12}}>{syncError}</span>
+                  <div style={{fontSize:12,marginTop:6}}>غالباً عمود ناقص في Supabase — شغّل ملف <strong>supabase_migration.sql</strong> مرة أخرى من SQL Editor، ثم اضغط «رفع التغييرات المعلقة».</div>
+                </div>
+              )}
               <div className="alert alert-success" style={{marginTop:14}}>
                 ⚡ <strong>Realtime مفعّل:</strong> أي تغيير على مريض أو جلسة يظهر <strong>فوراً</strong> على جميع الأجهزة المفتوحة دون الحاجة لتحديث الصفحة — يعمل عبر WebSocket
               </div>
