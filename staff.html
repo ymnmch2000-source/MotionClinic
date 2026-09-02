@@ -431,7 +431,7 @@ select.input{cursor:pointer;}
 </head>
 <body>
 <div id="root"></div>
-<script>/* ملف الموظفين المعزول — لا يعرض المالية */ window.__MC_STAFF = true;</script>
+<script>window.__MC_STAFF=true;</script>
 <script type="text/babel" data-presets="react">
 /* @jsxRuntime classic */
 // ══════════════════════════════════════════════════
@@ -456,6 +456,28 @@ window.ANTHROPIC_API_KEY = localStorage.getItem('mc_api_key') || '';
 // للعزل الأمني الكامل يجب تقييد المالية عبر RLS بحسب الدور في Supabase.
 const STAFF_MODE = !!(window.__MC_STAFF);
 
+// ── تحمّل اختلاف المخطط (Schema drift) ──
+// إذا لم يُشغَّل supabase_migration.sql بعد، فأي حقل جديد يُفشل رفع السجل كاملاً
+// فيبقى معلّقاً ولا يصل لبقية الأجهزة (ملف الموظفين). نتذكّر الأعمدة الناقصة ونتجاهلها.
+const SKIP_COLS_KEY = 'mc6_missing_cols';
+let _SKIP = (() => { try { return JSON.parse(localStorage.getItem(SKIP_COLS_KEY) || '{}'); } catch { return {}; } })();
+const _skipCols = (table) => new Set(_SKIP[table] || []);
+const _addSkipCol = (table, col) => {
+  _SKIP[table] = [...new Set([...(_SKIP[table] || []), col])];
+  try { localStorage.setItem(SKIP_COLS_KEY, JSON.stringify(_SKIP)); } catch (e) {}
+};
+// استخراج اسم العمود الناقص من رسالة PostgREST (PGRST204 / 42703)
+const _missingCol = (error) => {
+  const m = (error && (error.message || '')) + ' ' + ((error && error.details) || '');
+  const pats = [
+    new RegExp('Could not find the \\x27([^\\x27]+)\\x27 column', 'i'),
+    new RegExp('column \\x22([^\\x22]+)\\x22 of relation .* does not exist', 'i'),
+    new RegExp('column ([A-Za-z_][A-Za-z0-9_]*) does not exist', 'i'),
+  ];
+  for (const p of pats) { const r = m.match(p); if (r) return r[1]; }
+  return null;
+};
+
 // ── REST helper (يستخدم الـ SDK الرسمي) ──
 const sb = {
   // جلب جميع السجلات من جدول (بما فيها شواهد الحذف deleted=true ليتمكن السحب من إزالتها محلياً)
@@ -471,11 +493,24 @@ const sb = {
   },
 
   // إدراج أو تحديث سجل (التوقيت updated_at يُكتب من قاعدة البيانات عبر trigger لتوحيد الساعة بين الأجهزة)
+  // مقاوم لاختلاف المخطط: إذا كان حقل جديد بلا عمود في Supabase، يُستبعد ذلك الحقل ويُعاد الرفع
+  // بدلاً من فشل السجل كاملاً — هكذا يصل المريض للسحابة (وبالتالي لملف الموظفين) دائماً.
   async upsert(table, data) {
-    const rows = Array.isArray(data) ? data : [data];
-    const { error } = await _supaClient.from(table).upsert(rows, { onConflict: 'id' });
-    if (error) throw new Error(error.message);
-    return true;
+    let rows = (Array.isArray(data) ? data : [data]).map(r => {
+      const skip = _skipCols(table); if (!skip.size) return r;
+      const o = {}; for (const k in r) if (!skip.has(k)) o[k] = r[k];
+      return o;
+    });
+    for (let i = 0; i < 15; i++) {
+      const { error } = await _supaClient.from(table).upsert(rows, { onConflict: 'id' });
+      if (!error) return true;
+      const bad = _missingCol(error);
+      if (!bad) throw new Error(error.message);
+      _addSkipCol(table, bad);
+      console.warn(`[sb.upsert] ${table}: عمود «${bad}» غير موجود في Supabase — تم تجاهله مؤقتاً. شغّل supabase_migration.sql.`);
+      rows = rows.map(r => { const o = { ...r }; delete o[bad]; return o; });
+    }
+    throw new Error('تعذّر رفع السجل بعد تجاهل الأعمدة الناقصة — شغّل supabase_migration.sql');
   },
 
   // حذف ناعم (Tombstone) — لا يُحذف السجل فعلياً بل يُعلَّم كمحذوف.
@@ -484,6 +519,31 @@ const sb = {
     const { error } = await _supaClient.from(table)
       .update({ deleted: true, deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       .eq('id', id);
+    if (error) throw new Error(error.message);
+    return true;
+  },
+
+  // ── سلة المحذوفات ──
+  // شواهد الحذف (deleted=true) تبقى في القاعدة، فيمكن استرجاع أي سجل محذوف خلال مدة الاحتفاظ.
+  async selectDeleted(table) {
+    const { data, error } = await _supaClient.from(table).select('*')
+      .eq('deleted', true).order('deleted_at', { ascending: false }).limit(500);
+    if (error) return [];
+    return (data || []).map(row => (row.data && typeof row.data === 'object')
+      ? { ...row.data, id: row.id, updated_at: row.updated_at, deleted_at: row.deleted_at }
+      : row);
+  },
+  // إلغاء الحذف الناعم — يعود السجل لكل الأجهزة عبر Realtime
+  async restore(table, id) {
+    const { error } = await _supaClient.from(table)
+      .update({ deleted: false, deleted_at: null, updated_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw new Error(error.message);
+    return true;
+  },
+  // حذف نهائي لا رجعة فيه
+  async hardDelete(table, id) {
+    const { error } = await _supaClient.from(table).delete().eq('id', id);
     if (error) throw new Error(error.message);
     return true;
   },
@@ -878,6 +938,11 @@ const WEEKLY_STATS = ['الأحد','الاثنين','الثلاثاء','الأر
 // localStorage يبقى كذاكرة إقلاع فورية (cache)، وIndexedDB هو المخزن الدائم.
 // ══════════════════════════════════════════════════
 const IDB_NAME='motionclinic_db', IDB_STORE='kv', IDB_FILES='files', IDB_VER=1;
+// لقطات احتياطية موسّعة + تتبّع آخر نسخة احتياطية يدوية + مقبض مجلد النسخ
+const SNAP_KEY='mc6_snapshots_v2', SNAP_MAX=30;
+const LAST_BACKUP_KEY='mc6_last_backup';
+const DIR_HANDLE_KEY='mc6_backup_dir';
+const TRASH_DAYS=30;   // مدة الاحتفاظ بالمحذوفات في السلة
 let _idbPromise=null;
 function idbOpen(){
   if(_idbPromise) return _idbPromise;
@@ -1368,16 +1433,100 @@ function ClinicProvider({ children }) {
     pushKV('settings', next);
   };
 
+  // ── تذكير النسخ الاحتياطي الأسبوعي ──
+  const [lastBackup, setLastBackup] = useState(() => parseInt(localStorage.getItem(LAST_BACKUP_KEY)||'0',10));
+  const markBackupDone = useCallback(() => {
+    const t = Date.now();
+    localStorage.setItem(LAST_BACKUP_KEY, String(t));
+    setLastBackup(t);
+  }, []);
+  const backupAgeDays = lastBackup ? Math.floor((Date.now()-lastBackup)/86400000) : null;
+  const backupDue = backupAgeDays === null || backupAgeDays >= 7;
+
   // Backup/Restore
+  const backupPayload = () => ({settings,categories,patients,records,sessions,appointments,finance,expenses,inbody,notes,staff,inventory,hepLib,attendance,tasks,audit,v:'6',ts:new Date().toISOString()});
+
   const exportBackup = () => {
-    const data = {settings,categories,patients,records,sessions,appointments,finance,expenses,inbody,notes,staff,inventory,hepLib,attendance,tasks,audit,v:'6',ts:new Date().toISOString()};
-    const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const blob = new Blob([JSON.stringify(backupPayload(),null,2)],{type:'application/json'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `MotionClinic_Backup_${today()}.json`;
     a.click();
+    markBackupDone();
     showToast('تم تصدير النسخة الاحتياطية ✓');
   };
+
+  // ── تصدير Excel (صيغة SpreadsheetML — ورقة لكل قسم، تفتح مباشرة في Excel) ──
+  const exportExcel = () => {
+    const esc = (v) => String(v==null?'':v)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(new RegExp('\\x22','g'),'&quot;').replace(new RegExp('\\x27','g'),'&#39;');
+    const secs = [
+      ['المرضى',patients],['السجلات',records],['الجلسات',sessions],['المواعيد',appointments],
+      ['الفواتير',finance],['المصروفات',expenses],['InBody',inbody],['الملاحظات',notes],
+      ['فريق العمل',staff],['المخزون',inventory],['الحضور',attendance],['المهام',tasks],
+    ];
+    const sheets = secs.map(([name,rows])=>{
+      const list = (rows||[]).filter(r=>r && !r.deleted);
+      const cols = [...new Set(list.flatMap(r=>Object.keys(r)))].filter(c=>c!=='deleted');
+      const cell = (v)=>{
+        const s = (v!=null && typeof v==='object') ? JSON.stringify(v) : v;
+        const num = typeof v==='number' && isFinite(v);
+        return `<Cell><Data ss:Type="${num?'Number':'String'}">${esc(s)}</Data></Cell>`;
+      };
+      const head = '<Row>'+cols.map(c=>`<Cell><Data ss:Type="String">${esc(c)}</Data></Cell>`).join('')+'</Row>';
+      const body = list.map(r=>'<Row>'+cols.map(c=>cell(r[c])).join('')+'</Row>').join('');
+      return `<Worksheet ss:Name="${esc(name).slice(0,31)}"><Table>${head}${body}</Table></Worksheet>`;
+    }).join('');
+    const xml = `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?>`
+      + `<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">${sheets}</Workbook>`;
+    const blob = new Blob(['\uFEFF'+xml],{type:'application/vnd.ms-excel;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `MotionClinic_${today()}.xls`;
+    a.click();
+    showToast('تم تصدير ملف Excel ✓');
+  };
+
+  // ── حفظ النسخة في مجلد تختاره (مجلد Google Drive / OneDrive المُزامَن مثلاً) ──
+  // يستخدم File System Access API؛ يُحفظ مقبض المجلد في IndexedDB فتكفي الموافقة مرة واحدة.
+  const folderSupported = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
+  const [backupDir, setBackupDir] = useState(null);
+  useEffect(()=>{ idbGet(DIR_HANDLE_KEY).then(h=>{ if(h) setBackupDir(h); }); }, []);
+
+  const chooseBackupFolder = useCallback(async () => {
+    if(!folderSupported){ showToast('المتصفح لا يدعم الحفظ التلقائي في مجلد — استخدم Chrome/Edge على الكمبيوتر','error'); return; }
+    try{
+      const h = await window.showDirectoryPicker({ mode:'readwrite' });
+      await idbSet(DIR_HANDLE_KEY, h);
+      setBackupDir(h);
+      showToast('تم اختيار مجلد النسخ ✓');
+    }catch(e){}
+  }, [folderSupported]);
+
+  const saveBackupToFolder = useCallback(async (silent) => {
+    const h = backupDir || await idbGet(DIR_HANDLE_KEY);
+    if(!h) { if(!silent) showToast('اختر مجلد النسخ أولاً','error'); return false; }
+    try{
+      const perm = await h.requestPermission({ mode:'readwrite' });
+      if(perm !== 'granted'){ if(!silent) showToast('لم يُسمح بالكتابة في المجلد','error'); return false; }
+      const fh = await h.getFileHandle(`MotionClinic_Backup_${today()}.json`, { create:true });
+      const ws = await fh.createWritable();
+      await ws.write(JSON.stringify(backupPayload(),null,2));
+      await ws.close();
+      markBackupDone();
+      if(!silent) showToast('💾 حُفظت النسخة في المجلد ✓');
+      return true;
+    }catch(e){ if(!silent) showToast('تعذّر الحفظ: '+((e&&e.message)||''),'error'); return false; }
+  }, [backupDir, patients, records, sessions, appointments, finance, expenses, inbody, notes, staff, inventory, hepLib, attendance, tasks, settings, categories, audit, markBackupDone]);
+
+  // نسخة تلقائية أسبوعية إلى المجلد المختار (إن وُجد) — بصمت
+  useEffect(()=>{
+    if(!backupDir || !backupDue) return;
+    if((patients.length+records.length+sessions.length)===0) return;
+    const t = setTimeout(()=>{ saveBackupToFolder(true); }, 5000);
+    return ()=>clearTimeout(t);
+  }, [backupDir, backupDue, patients.length, records.length, sessions.length, saveBackupToFolder]);
   const importBackup = (json) => {
     const d = JSON.parse(json);
     if(d.settings)    setSettings(d.settings);
@@ -1436,6 +1585,33 @@ function ClinicProvider({ children }) {
     return {added, updated, skipped};
   };
 
+  // ── رفع كل بيانات هذا الجهاز إلى السحابة ──
+  // يضمن وصول كل المرضى والجلسات… إلى Supabase، ومنها تلقائياً إلى ملف الموظفين وبقية الأجهزة.
+  const pushAllToCloud = useCallback(async () => {
+    if (!navigator.onLine) { showToast('لا يوجد إنترنت', 'error'); return; }
+    const groups = [
+      ['mc_patients', patients], ['mc_records', records], ['mc_sessions', sessions],
+      ['mc_appointments', appointments], ['mc_finance', finance], ['mc_expenses', expenses],
+      ['mc_inbody', inbody], ['mc_notes', notes], ['mc_staff', staff],
+      ['mc_inventory', inventory], ['mc_hep', hepLib],
+      ['mc_attendance', attendance], ['mc_tasks', tasks],
+    ];
+    setSyncStatus('syncing');
+    let ok = 0, bad = 0, lastErr = '';
+    for (const [tbl, rows] of groups) {
+      const list = (rows || []).filter(r => r && r.id && !r.deleted);
+      for (let i = 0; i < list.length; i += 50) {          // دفعات لتفادي حدّ الحجم
+        try { await sb.upsert(tbl, list.slice(i, i + 50)); ok += Math.min(50, list.length - i); }
+        catch (e) { bad += Math.min(50, list.length - i); lastErr = (e && e.message) || String(e); }
+      }
+    }
+    try { await sb.upsertKV('settings', settings); await sb.upsertKV('categories', categories); } catch (e) {}
+    setSyncError(bad ? lastErr : '');
+    setSyncStatus(bad ? 'error' : 'online');
+    if (!bad) setLastSync(new Date().toISOString());
+    showToast(bad ? `رُفع ${ok} سجلاً · فشل ${bad}` : `☁️ رُفع ${ok} سجلاً إلى السحابة ✓`, bad ? 'error' : 'success');
+  }, [patients, records, sessions, appointments, finance, expenses, inbody, notes, staff, inventory, hepLib, attendance, tasks, settings, categories]);
+
   const resetSystem = () => {
     // إعادة ضبط محلية فقط — تُفرّغ كل السجلات وتُبقي الإعدادات والتصنيفات الافتراضية.
     setSettings(DEF_SETTINGS); setCategories(DEF_CATEGORIES);
@@ -1445,26 +1621,42 @@ function ClinicProvider({ children }) {
     setInventory([]); setHepLib([]); setAttendance([]); setTasks([]); setAudit([]);
   };
 
-  // ── نسخ احتياطي تلقائي محلي (لقطات) — حماية إضافية ضد فقدان البيانات ──
+  // ── نسخ احتياطي تلقائي محلي (لقطات) ──
+  // تُحفظ الآن في IndexedDB (سعة أكبر بكثير) مع الاحتفاظ بـ 30 لقطة بدل 5.
+  const [snapshots, setSnapshots] = useState([]);
+  const loadSnapshots = useCallback(async () => {
+    let arr = await idbGet(SNAP_KEY);
+    if (!Array.isArray(arr)) {
+      try { arr = JSON.parse(localStorage.getItem('mc6_snapshots') || '[]'); } catch(e) { arr = []; }  // ترحيل اللقطات القديمة
+    }
+    setSnapshots(arr || []);
+    return arr || [];
+  }, []);
+  useEffect(()=>{ loadSnapshots(); }, [loadSnapshots]);
+
   React.useEffect(()=>{
-    try{
-      const last = parseInt(localStorage.getItem('mc6_snap_ts')||'0',10);
-      if(Date.now()-last < 12*3600*1000) return; // كل 12 ساعة
-      if((patients.length+records.length+sessions.length)===0) return; // لا تحفظ نظاماً فارغاً
-      const snap = {ts:new Date().toISOString(), counts:{patients:patients.length,sessions:sessions.length,finance:finance.length},
-        data:{patients,records,sessions,appointments,finance,expenses,inbody,notes,staff,inventory,hepLib}};
-      const arr = JSON.parse(localStorage.getItem('mc6_snapshots')||'[]');
-      arr.unshift(snap);
-      localStorage.setItem('mc6_snapshots', JSON.stringify(arr.slice(0,5)));
-      localStorage.setItem('mc6_snap_ts', String(Date.now()));
-    }catch(e){}
+    (async ()=>{
+      try{
+        const last = parseInt(localStorage.getItem('mc6_snap_ts')||'0',10);
+        if(Date.now()-last < 12*3600*1000) return; // كل 12 ساعة
+        if((patients.length+records.length+sessions.length)===0) return; // لا تحفظ نظاماً فارغاً
+        const snap = {ts:new Date().toISOString(), counts:{patients:patients.length,sessions:sessions.length,finance:finance.length},
+          data:{patients,records,sessions,appointments,finance,expenses,inbody,notes,staff,inventory,hepLib,attendance,tasks}};
+        const arr = await loadSnapshots();
+        const next = [snap, ...arr].slice(0, SNAP_MAX);
+        await idbSet(SNAP_KEY, next);
+        setSnapshots(next);
+        localStorage.setItem('mc6_snap_ts', String(Date.now()));
+      }catch(e){}
+    })();
   }, [patients,records,sessions,appointments,finance,expenses,inbody]);
+
 
   const value = {
     settings, categories, patients, records, sessions, appointments, finance, expenses,
     inbody, notes, staff, inventory, hepLib, attendance, tasks, audit, toast, showToast,
     // Sync state
-    syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending,
+    syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending, pushAllToCloud,
     // Patient CRUD
     addPatient:patCRUD.add, updatePatient:patCRUD.update, deletePatient:patCRUD.delete,
     // Record CRUD
@@ -1495,6 +1687,10 @@ function ClinicProvider({ children }) {
     addCatItem, updateCatItem, deleteCatItem, addCatGroup, deleteCatGroup,
     // Settings
     updateSettings, exportBackup, importBackup, mergeImport, resetSystem,
+    // النسخ الاحتياطي المتقدم
+    exportExcel, snapshots, loadSnapshots,
+    lastBackup, backupAgeDays, backupDue, markBackupDone,
+    folderSupported, backupDir, chooseBackupFolder, saveBackupToFolder,
   };
 
   return (
@@ -6134,7 +6330,9 @@ function CategoriesPage(){
 // ══════════════════════════════════════════════════
 function SettingsPage(){
   const {settings, updateSettings, exportBackup, importBackup, mergeImport, resetSystem, categories,
-         audit, syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending} = useClinic();
+         audit, syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending, pushAllToCloud,
+         exportExcel, snapshots, backupAgeDays, backupDue,
+         folderSupported, backupDir, chooseBackupFolder, saveBackupToFolder} = useClinic();
   const [tab,setTab] = useState('clinic');
   const [importing,setImporting] = useState(false);
   const [auditFilter,setAuditFilter] = useState('');
@@ -6566,6 +6764,10 @@ function SettingsPage(){
                 <button className="btn btn-outline" onClick={flushPending} disabled={syncStatus==='syncing'||pendingCount===0}>
                   ⬆️ رفع التغييرات المعلقة ({pendingCount})
                 </button>
+                <button className="btn btn-secondary" disabled={syncStatus==='syncing'}
+                  onClick={()=>{ if(confirm('رفع كل بيانات هذا الجهاز إلى السحابة.\nستظهر بعدها في ملف الموظفين وعلى كل الأجهزة.\n\nمتابعة؟')) pushAllToCloud(); }}>
+                  ☁️⬆️ رفع كل بيانات هذا الجهاز للسحابة
+                </button>
                 <button className="btn btn-outline" style={{borderColor:'var(--accent)',color:'var(--accent)'}} disabled={syncStatus==='syncing'}
                   onClick={()=>{ if(confirm('استرجاع كامل: سيتم استبدال بيانات هذا الجهاز بنسخة السحابة.\nارفع أولاً أي تغييرات معلّقة إن أردت الاحتفاظ بها.\n\nمتابعة؟')) pullFromSupabase(true); }}>
                   ☁️ استرجاع كل البيانات من السحابة
@@ -6596,11 +6798,41 @@ function SettingsPage(){
           <div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h3>💾 النسخ الاحتياطي المحلي</h3></div>
             <div className="card-body">
+              <div className={backupDue?'alert alert-warning':'alert alert-success'} style={{marginBottom:14}}>
+                {backupDue
+                  ? <span>🔔 <strong>تذكير:</strong> {backupAgeDays===null?'لم تأخذ نسخة احتياطية يدوية بعد.':`مرّ ${backupAgeDays} يوماً على آخر نسخة احتياطية.`} يُنصح بأخذ نسخة <strong>كل أسبوع</strong> وحفظها خارج الجهاز (Google Drive / USB).</span>
+                  : <span>✅ آخر نسخة احتياطية منذ <strong>{backupAgeDays}</strong> يوم — أنت بخير.</span>}
+              </div>
               <div style={{display:'flex',flexDirection:'column',gap:14}}>
                 <div style={{padding:16,background:'var(--surface)',borderRadius:10,border:'1px solid var(--border)'}}>
                   <div style={{fontWeight:800,fontSize:15,marginBottom:6,color:'var(--primary)'}}>📤 تصدير نسخة احتياطية كاملة</div>
                   <div style={{fontSize:13,color:'var(--text-mid)',marginBottom:12}}>يحفظ جميع البيانات في ملف JSON — احتفظ به على Google Drive أو جهازك</div>
-                  <button className="btn btn-primary" onClick={exportBackup}>💾 تصدير النسخة الاحتياطية</button>
+                  <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+                    <button className="btn btn-primary" onClick={exportBackup}>💾 تصدير النسخة الاحتياطية (JSON)</button>
+                    <button className="btn btn-outline" onClick={exportExcel}>📊 تصدير Excel (كل الأقسام)</button>
+                  </div>
+                </div>
+                <div style={{padding:16,background:'#eff6ff',borderRadius:10,border:'2px solid var(--blue)'}}>
+                  <div style={{fontWeight:800,fontSize:15,marginBottom:6,color:'var(--blue)'}}>📁 نسخة تلقائية إلى مجلد (Google Drive / iCloud / USB)</div>
+                  {folderSupported ? (
+                    <>
+                      <div style={{fontSize:13,color:'var(--text-mid)',marginBottom:12}}>
+                        اختر مجلد مزامنة Google Drive أو iCloud على جهازك — سيحفظ النظام نسخة JSON فيه <strong>تلقائياً كل أسبوع</strong> وترفعها الخدمة للسحابة بنفسها.
+                      </div>
+                      <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+                        <button className="btn btn-primary" onClick={chooseBackupFolder}>
+                          {backupDir?'🔁 تغيير المجلد':'📂 اختيار مجلد النسخ'}
+                        </button>
+                        {backupDir && <button className="btn btn-outline" onClick={()=>saveBackupToFolder(false)}>⬇️ حفظ نسخة الآن</button>}
+                        {backupDir && <span style={{fontSize:12,fontWeight:700,color:'var(--green)'}}>✅ المجلد: {backupDir.name}</span>}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{fontSize:13,color:'var(--text-mid)'}}>
+                      ⚠️ متصفحك لا يدعم الحفظ المباشر في مجلد. استخدم <strong>Chrome</strong> أو <strong>Edge</strong> على الكمبيوتر،
+                      أو صدّر JSON يدوياً وارفعه إلى Google Drive.
+                    </div>
+                  )}
                 </div>
                 <div style={{padding:16,background:'#ecfdf5',borderRadius:10,border:'2px solid var(--green)'}}>
                   <div style={{fontWeight:800,fontSize:15,marginBottom:6,color:'#059669'}}>♻️ استعادة / دمج آمن (موصى به)</div>
@@ -6668,10 +6900,10 @@ function SettingsPage(){
             <div className="card-header"><h3>🛟 اللقطات الاحتياطية التلقائية</h3></div>
             <div className="card-body">
               <div className="alert alert-success" style={{marginBottom:14}}>
-                يحفظ النظام لقطة كاملة من بياناتك تلقائياً كل 12 ساعة (آخر 5 لقطات) على هذا الجهاز — حماية إضافية ضد فقدان البيانات.
+                يحفظ النظام لقطة كاملة من بياناتك تلقائياً كل 12 ساعة (آخر <strong>30</strong> لقطة ≈ شهرين) داخل قاعدة IndexedDB على هذا الجهاز — حماية إضافية ضد فقدان البيانات.
               </div>
               {(()=>{
-                let snaps=[]; try{ snaps=JSON.parse(localStorage.getItem('mc6_snapshots')||'[]'); }catch(e){}
+                const snaps = snapshots || [];
                 if(!snaps.length) return <div className="empty-state" style={{padding:'24px 0'}}><div className="icon">🛟</div><h3>لا لقطات بعد</h3><p>ستُنشأ تلقائياً مع استخدام النظام</p></div>;
                 return (
                   <div style={{display:'flex',flexDirection:'column',gap:8}}>
@@ -7768,6 +8000,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
     { section:'الإدارة', items:[
       {id:'staff',      icon:'👨‍⚕️', label:'فريق العمل'},
       {id:'audit',      icon:'🔒',  label:'سجل التعديلات'},
+      ...(STAFF_MODE ? [] : [{id:'trash', icon:'🗑️', label:'سلة المحذوفات'}]),
     ]},
     { section:'النظام', items:[
       {id:'categories', icon:'🗂️', label:'الفئات والقوائم'},
@@ -7780,7 +8013,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
     inbody:'InBody', nutrition:'التغذية العلاجية', notes:'الملاحظات', calendar:'التقويم',
     finance:'المالية', hep:'مكتبة التمارين', services:'الخدمات',
     inventory:'المخزون', analytics:'التحليل التنبئي', reports:'التقارير',
-    xray:'مقارنة الأشعة', staff:'فريق العمل', audit:'سجل التعديلات',
+    xray:'مقارنة الأشعة', staff:'فريق العمل', audit:'سجل التعديلات', trash:'سلة المحذوفات',
     opsreport:'التقارير التشغيلية', attendance:'الحضور والانصراف', tasks:'مهام الكادر',
     categories:'الفئات', settings:'الإعدادات',
   };
@@ -8307,6 +8540,108 @@ function TaskCenterPage(){
 }
 
 // ══════════════════════════════════════════════════
+// سلة المحذوفات — استرجاع أي سجل حُذف خلال مدة الاحتفاظ
+// ══════════════════════════════════════════════════
+const TRASH_TABLES = [
+  ['mc_patients','👥 المرضى'], ['mc_records','📋 السجلات'], ['mc_sessions','🔄 الجلسات'],
+  ['mc_appointments','📅 المواعيد'], ['mc_finance','💰 الفواتير'], ['mc_expenses','💸 المصروفات'],
+  ['mc_inbody','⚖️ InBody'], ['mc_notes','📝 الملاحظات'], ['mc_staff','🧑‍⚕️ فريق العمل'],
+  ['mc_inventory','📦 المخزون'], ['mc_hep','🏋️ التمارين'],
+  ['mc_attendance','🕐 الحضور'], ['mc_tasks','✅ المهام'],
+];
+
+function RecycleBinPage(){
+  const {pullFromSupabase, showToast} = useClinic();
+  const [rows,setRows]   = useState([]);
+  const [busy,setBusy]   = useState(false);
+  const [filter,setFilter] = useState('');
+
+  const load = async () => {
+    if(!navigator.onLine){ showToast('سلة المحذوفات تحتاج اتصالاً بالإنترنت','error'); return; }
+    setBusy(true);
+    const all = [];
+    for(const [tbl,label] of TRASH_TABLES){
+      try{
+        const list = await sb.selectDeleted(tbl);
+        list.forEach(r=>all.push({...r, _tbl:tbl, _label:label}));
+      }catch(e){}
+    }
+    all.sort((a,b)=>String(b.deleted_at||'').localeCompare(String(a.deleted_at||'')));
+    setRows(all);
+    setBusy(false);
+  };
+  useEffect(()=>{ load(); }, []);
+
+  const daysLeft = (r) => {
+    if(!r.deleted_at) return TRASH_DAYS;
+    return Math.max(0, TRASH_DAYS - Math.floor((Date.now()-new Date(r.deleted_at).getTime())/86400000));
+  };
+  const titleOf = (r) => r.name || r.patientName || r.title || r.itemName || r.serviceLabel || r.category || r.id;
+
+  const doRestore = async (r) => {
+    if(!confirm('استرجاع «'+titleOf(r)+'»؟\nسيعود للنظام على كل الأجهزة.')) return;
+    setBusy(true);
+    try{ await sb.restore(r._tbl, r.id); showToast('♻️ تم الاسترجاع ✓'); await pullFromSupabase(); await load(); }
+    catch(e){ showToast('تعذّر الاسترجاع: '+((e&&e.message)||''),'error'); }
+    setBusy(false);
+  };
+  const doPurge = async (r) => {
+    if(!confirm('حذف «'+titleOf(r)+'» نهائياً؟\n⚠️ لا يمكن التراجع عن هذا الإجراء إطلاقاً.')) return;
+    setBusy(true);
+    try{ await sb.hardDelete(r._tbl, r.id); showToast('تم الحذف النهائي'); await load(); }
+    catch(e){ showToast('تعذّر الحذف: '+((e&&e.message)||''),'error'); }
+    setBusy(false);
+  };
+
+  const shown = rows.filter(r=>!filter || r._tbl===filter);
+  const counts = {}; rows.forEach(r=>{ counts[r._tbl]=(counts[r._tbl]||0)+1; });
+
+  return(
+    <div>
+      <div className="page-header">
+        <div><h1>🗑️ سلة المحذوفات</h1><p>استرجاع أي سجل محذوف خلال {TRASH_DAYS} يوماً</p></div>
+        <button className="btn btn-outline" onClick={load} disabled={busy}>{busy?'⏳ جاري...':'🔄 تحديث'}</button>
+      </div>
+
+      <div className="alert alert-info" style={{marginBottom:14}}>
+        💡 الحذف في النظام <strong>ناعم</strong> — يبقى السجل محفوظاً في السحابة ويمكن استرجاعه من هنا. الحذف النهائي وحده لا رجعة فيه.
+      </div>
+
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:14}}>
+        <button onClick={()=>setFilter('')} style={{fontSize:12.5,fontWeight:700,padding:'6px 14px',borderRadius:18,cursor:'pointer',border:'1px solid var(--border)',
+          background:filter===''?'var(--primary)':'var(--card)',color:filter===''?'#fff':'var(--text-mid)'}}>الكل ({rows.length})</button>
+        {TRASH_TABLES.filter(([t])=>counts[t]).map(([t,l])=>(
+          <button key={t} onClick={()=>setFilter(t)} style={{fontSize:12.5,fontWeight:700,padding:'6px 14px',borderRadius:18,cursor:'pointer',border:'1px solid var(--border)',
+            background:filter===t?'var(--primary)':'var(--card)',color:filter===t?'#fff':'var(--text-mid)'}}>{l} ({counts[t]})</button>
+        ))}
+      </div>
+
+      <div className="card">
+        <table className="data-table">
+          <thead><tr><th>النوع</th><th>السجل</th><th>الكود</th><th>تاريخ الحذف</th><th>متبقٍ</th><th>إجراءات</th></tr></thead>
+          <tbody>
+            {shown.map(r=>{ const dl=daysLeft(r); return(
+              <tr key={r._tbl+'|'+r.id}>
+                <td>{r._label}</td>
+                <td style={{fontWeight:700}}>{titleOf(r)}</td>
+                <td style={{fontSize:12,color:'var(--text-light)'}}>{r.id}</td>
+                <td>{r.deleted_at?new Date(r.deleted_at).toLocaleString('ar-EG'):'—'}</td>
+                <td><span className={'badge badge-'+(dl>7?'green':dl>0?'yellow':'red')}>{dl>0?dl+' يوم':'منتهٍ'}</span></td>
+                <td>
+                  <button className="row-action-btn" title="استرجاع" style={{color:'var(--green)'}} disabled={busy} onClick={()=>doRestore(r)}>♻️</button>
+                  <button className="row-action-btn" title="حذف نهائي" style={{color:'var(--red)'}} disabled={busy} onClick={()=>doPurge(r)}>🗑️</button>
+                </td>
+              </tr>
+            ); })}
+          </tbody>
+        </table>
+        {shown.length===0 && !busy && <div className="empty-state" style={{padding:30}}><div className="icon">✨</div><h3>السلة فارغة</h3><p>لا سجلات محذوفة</p></div>}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
 // PAGE ROUTER
 // ══════════════════════════════════════════════════
 function PageRouter({currentPage, patientId, navigate}){
@@ -8331,6 +8666,7 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'attendance': return STAFF_MODE ? <Dashboard navigate={navigate}/> : <AttendancePage/>;
     case 'tasks':      return <TaskCenterPage/>;
     case 'audit':      return <AuditPage/>;
+    case 'trash':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <RecycleBinPage/>;
     case 'categories': return <CategoriesPage/>;
     case 'settings':   return <SettingsPage/>;
     default:           return <Dashboard navigate={navigate}/>;
