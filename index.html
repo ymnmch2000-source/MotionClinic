@@ -495,9 +495,13 @@ const sb = {
   // مقاوم لاختلاف المخطط: إذا كان حقل جديد بلا عمود في Supabase، يُستبعد ذلك الحقل ويُعاد الرفع
   // بدلاً من فشل السجل كاملاً — هكذا يصل المريض للسحابة (وبالتالي لملف الموظفين) دائماً.
   async upsert(table, data) {
+    // توحيد حقل الحذف على كل الصفوف: PostgREST يوحّد الأعمدة عبر الدفعة،
+    // فإن حمله صف واحد فقط تصبح بقية الصفوف NULL وتخالف قيد NOT NULL.
     let rows = (Array.isArray(data) ? data : [data]).map(r => {
-      const skip = _skipCols(table); if (!skip.size) return r;
-      const o = {}; for (const k in r) if (!skip.has(k)) o[k] = r[k];
+      const skip = _skipCols(table);
+      const o = {};
+      for (const k in r) if (!skip.has(k)) o[k] = r[k];
+      if (!skip.has('deleted')) o.deleted = !!r.deleted;
       return o;
     });
     for (let i = 0; i < 15; i++) {
