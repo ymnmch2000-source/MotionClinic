@@ -466,6 +466,8 @@ const _addSkipCol = (table, col) => {
   _SKIP[table] = [...new Set([...(_SKIP[table] || []), col])];
   try { localStorage.setItem(SKIP_COLS_KEY, JSON.stringify(_SKIP)); } catch (e) {}
 };
+// بعد تشغيل الترحيل تصبح القائمة قديمة — نمسحها ليُعاد اكتشاف الأعمدة الحقيقية
+const _resetSkipCols = () => { _SKIP = {}; try { localStorage.removeItem(SKIP_COLS_KEY); } catch (e) {} };
 // استخراج اسم العمود الناقص من رسالة PostgREST (PGRST204 / 42703)
 const _missingCol = (error) => {
   const m = (error && (error.message || '')) + ' ' + ((error && error.details) || '');
@@ -485,36 +487,55 @@ const sb = {
     const { data, error } = await _supaClient.from(table).select('*').order('updated_at', { ascending: false });
     if (error) { console.warn(`[sb.select] ${table}:`, error.message); return []; }
     return (data || []).map(row => {
-      if (row.data && typeof row.data === 'object') {
-        return { ...row.data, id: row.id, updated_at: row.updated_at, deleted: row.deleted || row.data.deleted || false };
+      const extra = row.data;
+      if (extra && typeof extra === 'object') {
+        // الأعمدة الحقيقية + الحقول المحفوظة داخل data (الحقول التي لا عمود لها)
+        const merged = { ...row, ...extra };
+        delete merged.data;
+        merged.id = row.id;
+        merged.updated_at = row.updated_at;
+        merged.deleted = !!(row.deleted || extra.deleted);
+        return merged;
       }
       return row;
     });
   },
 
   // إدراج أو تحديث سجل (التوقيت updated_at يُكتب من قاعدة البيانات عبر trigger لتوحيد الساعة بين الأجهزة)
-  // مقاوم لاختلاف المخطط: إذا كان حقل جديد بلا عمود في Supabase، يُستبعد ذلك الحقل ويُعاد الرفع
-  // بدلاً من فشل السجل كاملاً — هكذا يصل المريض للسحابة (وبالتالي لملف الموظفين) دائماً.
+  // مقاوم لاختلاف المخطط: أي حقل لا عمود له في Supabase يُنقل إلى عمود data (jsonb)
+  // بدلاً من ضياعه أو إفشال السجل كاملاً — فلا تُفقد بيانات المريض أبداً.
   async upsert(table, data) {
-    // توحيد حقل الحذف على كل الصفوف: PostgREST يوحّد الأعمدة عبر الدفعة،
-    // فإن حمله صف واحد فقط تصبح بقية الصفوف NULL وتخالف قيد NOT NULL.
-    let rows = (Array.isArray(data) ? data : [data]).map(r => {
-      const skip = _skipCols(table);
-      const o = {};
-      for (const k in r) if (!skip.has(k)) o[k] = r[k];
-      if (!skip.has('deleted')) o.deleted = !!r.deleted;
+    const originals = Array.isArray(data) ? data : [data];
+    // الحقول التي سبق أن تبيّن أن لا عمود لها → تُوضع مباشرة في data
+    const build = (skip) => originals.map(r => {
+      const o = {}, extra = {};
+      for (const k in r) {
+        if (k === 'data') continue;
+        if (skip.has(k)) extra[k] = r[k]; else o[k] = r[k];
+      }
+      o.deleted = !!r.deleted;
+      if (Object.keys(extra).length) o.data = extra;
       return o;
     });
-    for (let i = 0; i < 15; i++) {
+    let skip = _skipCols(table);
+    let rows = build(skip);
+    for (let i = 0; i < 25; i++) {
       const { error } = await _supaClient.from(table).upsert(rows, { onConflict: 'id' });
       if (!error) return true;
       const bad = _missingCol(error);
       if (!bad) throw new Error(error.message);
+      if (bad === 'data') {
+        // لا يوجد عمود data — لم يبقَ إلا الإسقاط الصريح للحقول الزائدة
+        rows = rows.map(r => { const o = { ...r }; delete o.data; return o; });
+        console.warn(`[sb.upsert] ${table}: لا يوجد عمود data — بعض الحقول لن تُرفع. شغّل supabase_migration.sql.`);
+        continue;
+      }
       _addSkipCol(table, bad);
-      console.warn(`[sb.upsert] ${table}: عمود «${bad}» غير موجود في Supabase — تم تجاهله مؤقتاً. شغّل supabase_migration.sql.`);
-      rows = rows.map(r => { const o = { ...r }; delete o[bad]; return o; });
+      console.warn(`[sb.upsert] ${table}: عمود «${bad}» غير موجود — نُقل إلى data. شغّل supabase_migration.sql لأداء أفضل.`);
+      skip = _skipCols(table);
+      rows = build(skip);
     }
-    throw new Error('تعذّر رفع السجل بعد تجاهل الأعمدة الناقصة — شغّل supabase_migration.sql');
+    throw new Error('تعذّر رفع السجل — شغّل supabase_migration.sql من SQL Editor');
   },
 
   // حذف ناعم (Tombstone) — لا يُحذف السجل فعلياً بل يُعلَّم كمحذوف.
@@ -1593,6 +1614,7 @@ function ClinicProvider({ children }) {
   // يضمن وصول كل المرضى والجلسات… إلى Supabase، ومنها تلقائياً إلى ملف الموظفين وبقية الأجهزة.
   const pushAllToCloud = useCallback(async () => {
     if (!navigator.onLine) { showToast('لا يوجد إنترنت', 'error'); return; }
+    _resetSkipCols();   // بعد تشغيل الترحيل تصير قائمة الأعمدة الناقصة قديمة — أعد اكتشافها
     const groups = [
       ['mc_patients', patients], ['mc_records', records], ['mc_sessions', sessions],
       ['mc_appointments', appointments], ['mc_finance', finance], ['mc_expenses', expenses],
@@ -8859,12 +8881,17 @@ ReactDOM.createRoot(document.getElementById('root')).render(<RootApp/>);
   );
   const iconURL = 'data:image/svg+xml,' + iconSVG;
 
+  // ⚠️ الروابط هنا يجب أن تكون مطلقة: الـ manifest يُحمَّل من blob: فتُحَل الروابط النسبية
+  // بالنسبة لعنوان الـ blob لا لعنوان الموقع — وهذا يجعل أيقونة الهاتف تفتح رابطاً معطوباً.
+  const _here  = location.origin + location.pathname;                 // مثال: https://user.github.io/Repo/index.html
+  const _scope = location.origin + location.pathname.slice(0, location.pathname.lastIndexOf('/') + 1);
   const manifest = {
     name: 'Motion Clinic — عيادة الحركة',
     short_name: 'Motion Clinic',
     description: 'نظام إدارة عيادة العلاج الطبيعي والتأهيل',
-    start_url: '.',
-    scope: '.',
+    id: _here,
+    start_url: _here,
+    scope: _scope,
     display: 'standalone',
     orientation: 'portrait',
     background_color: '#0f2d4a',
@@ -8891,8 +8918,16 @@ ReactDOM.createRoot(document.getElementById('root')).render(<RootApp/>);
 // ══════════════════════════════════════════════════
 // Service Worker — Network-First للتطبيق (يضمن وصول التحديثات دائماً)
 // ══════════════════════════════════════════════════
+// ⚠️ لا يمكن تسجيل Service Worker من رابط blob: — المتصفحات ترفضه (SecurityError)
+// لذلك نسجّل ملف sw.js الحقيقي المرفوع بجانب الصفحة. إن لم يكن موجوداً يفشل بصمت بلا ضرر.
 if('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  const SW = `
+  navigator.serviceWorker.register('sw.js')
+    .then(() => console.log('✅ PWA جاهز — يعمل أوفلاين وقابل للتثبيت'))
+    .catch(() => console.log('ℹ️ sw.js غير موجود — التطبيق يعمل بشكل طبيعي بدونه'));
+}
+
+// نسخة مرجعية من محتوى sw.js (غير مستخدمة وقت التشغيل — للتوثيق فقط)
+const _SW_REFERENCE = `
 const CACHE = 'mc-v9';
 self.addEventListener('install', e => { self.skipWaiting(); });
 self.addEventListener('activate', e => {
@@ -8919,11 +8954,7 @@ self.addEventListener('fetch', e => {
     }).catch(() => caches.match(e.request))
   );
 });`;
-  const blob = new Blob([SW], {type:'text/javascript'});
-  navigator.serviceWorker.register(URL.createObjectURL(blob))
-    .then(() => console.log('✅ PWA جاهز — يعمل أوفلاين وقابل للتثبيت'))
-    .catch(() => {});
-}
+void _SW_REFERENCE;
 </script>
 </body>
 </html>
