@@ -8,6 +8,20 @@
   <meta name="apple-mobile-web-app-title" content="Motion Clinic"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Motion Clinic Enterprise v7 — Realtime</title>
+<script>
+/* التقاط حدث التثبيت مبكراً: المتصفح يُطلقه قبل أن ينتهي Babel من التصريف،
+   فلو انتظرنا React لضاع الحدث ولما ظهر زر «ثبّت التطبيق». */
+window.__mcInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e){
+  e.preventDefault();
+  window.__mcInstallPrompt = e;
+  window.dispatchEvent(new Event('mc-installable'));
+});
+window.addEventListener('appinstalled', function(){
+  window.__mcInstallPrompt = null;
+  window.dispatchEvent(new Event('mc-installed'));
+});
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800;900&family=Tajawal:wght@300;400;500;700;800&display=swap" rel="stylesheet"/>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -7908,6 +7922,114 @@ function XRayPage({navigate}){
 
 
 // ══════════════════════════════════════════════════
+// INSTALL APP BUTTON (PWA)
+// ══════════════════════════════════════════════════
+function InstallButton() {
+  const [canInstall, setCanInstall] = React.useState(!!window.__mcInstallPrompt);
+  const [installed, setInstalled]   = React.useState(false);
+  const [showIOS, setShowIOS]       = React.useState(false);
+
+  // هل التطبيق مفتوح أصلاً كتطبيق مثبّت؟
+  const isStandalone = (() => {
+    try {
+      return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+          || navigator.standalone === true;
+    } catch(e) { return false; }
+  })();
+
+  const ua = navigator.userAgent || '';
+  const isIOS = (ua.includes('iPhone') || ua.includes('iPad') || ua.includes('iPod'))
+             || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1);
+
+  React.useEffect(() => {
+    const onReady = () => setCanInstall(true);
+    const onDone  = () => { setCanInstall(false); setInstalled(true); };
+    window.addEventListener('mc-installable', onReady);
+    window.addEventListener('mc-installed', onDone);
+    return () => {
+      window.removeEventListener('mc-installable', onReady);
+      window.removeEventListener('mc-installed', onDone);
+    };
+  }, []);
+
+  const doInstall = async () => {
+    // iOS/Safari لا يدعم التثبيت التلقائي — نعرض التعليمات
+    if (isIOS || !window.__mcInstallPrompt) { setShowIOS(true); return; }
+    try {
+      const ev = window.__mcInstallPrompt;
+      ev.prompt();
+      const res = await ev.userChoice;
+      window.__mcInstallPrompt = null;
+      setCanInstall(false);
+      if (res && res.outcome === 'accepted') setInstalled(true);
+    } catch(e) { setShowIOS(true); }
+  };
+
+  if (isStandalone || installed) return null;
+  if (!canInstall && !isIOS) return null;
+
+  return (
+    <>
+      <button
+        onClick={doInstall}
+        title="ثبّت النظام كتطبيق على جهازك — يفتح بأيقونة مستقلة ويعمل بدون إنترنت"
+        style={{
+          display:'flex', alignItems:'center', gap:6, cursor:'pointer',
+          background:'linear-gradient(135deg,#0f2d4a,#1e5f8e)', color:'#fff',
+          border:'none', borderRadius:20, padding:'7px 14px',
+          fontSize:12, fontWeight:800, fontFamily:'inherit',
+          boxShadow:'0 2px 8px rgba(15,45,74,.3)'
+        }}>
+        📲 ثبّت التطبيق
+      </button>
+
+      {showIOS && (
+        <div className="modal-overlay" onClick={()=>setShowIOS(false)}>
+          <div className="modal" style={{maxWidth:460}} onClick={e=>e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>📲 تثبيت التطبيق على جهازك</h2>
+              <button className="modal-close" onClick={()=>setShowIOS(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              {isIOS ? (
+                <div>
+                  <div className="alert alert-info" style={{marginBottom:14}}>
+                    متصفح <strong>Safari</strong> على الآيفون/الآيباد لا يسمح بالتثبيت بضغطة واحدة — الخطوات يدوية وبسيطة:
+                  </div>
+                  <ol style={{lineHeight:2.1, fontWeight:700, paddingInlineStart:20}}>
+                    <li>افتح هذه الصفحة داخل متصفح <strong>Safari</strong> (وليس Chrome أو داخل تطبيق آخر).</li>
+                    <li>اضغط زر المشاركة <strong>⬆️</strong> في شريط المتصفح السفلي.</li>
+                    <li>مرّر للأسفل واختر <strong>«إضافة إلى الشاشة الرئيسية»</strong> (Add to Home Screen).</li>
+                    <li>اضغط <strong>«إضافة»</strong> — ستظهر أيقونة النظام مع بقية تطبيقاتك.</li>
+                  </ol>
+                </div>
+              ) : (
+                <div>
+                  <div className="alert alert-warning" style={{marginBottom:14}}>
+                    لم يتمكّن المتصفح من فتح نافذة التثبيت تلقائياً. يمكنك التثبيت يدوياً:
+                  </div>
+                  <ol style={{lineHeight:2.1, fontWeight:700, paddingInlineStart:20}}>
+                    <li><strong>Chrome / Edge (كمبيوتر):</strong> اضغط أيقونة التثبيت ⊕ في شريط العنوان، أو قائمة ⋮ ← «تثبيت Motion Clinic».</li>
+                    <li><strong>Chrome (أندرويد):</strong> قائمة ⋮ ← «إضافة إلى الشاشة الرئيسية».</li>
+                    <li>تأكّد أن الصفحة مفتوحة عبر رابط <strong>https</strong> وليس ملفاً محلياً.</li>
+                  </ol>
+                </div>
+              )}
+              <div style={{marginTop:14, fontSize:12, color:'var(--text-light)', fontWeight:700}}>
+                بعد التثبيت سيفتح النظام بأيقونة مستقلة، بشاشة كاملة بلا شريط متصفح، ويعمل حتى عند انقطاع الإنترنت.
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-primary" onClick={()=>setShowIOS(false)}>فهمت 👍</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ══════════════════════════════════════════════════
 // SYNC STATUS BAR
 // ══════════════════════════════════════════════════
 function SyncStatusBar() {
@@ -8112,6 +8234,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
                 👥 وضع الموظفين
               </div>
             )}
+            <InstallButton/>
             <SyncStatusBar/>
             <div className="status-pill">
               <span className="status-dot"/>
