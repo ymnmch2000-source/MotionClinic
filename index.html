@@ -530,10 +530,27 @@ const _normRow = (row) => {
 // ── REST helper (يستخدم الـ SDK الرسمي) ──
 const sb = {
   // جلب جميع السجلات من جدول (بما فيها شواهد الحذف deleted=true ليتمكن السحب من إزالتها محلياً)
+  // ⚠️ مهم: PostgREST يحدّ الاستجابة بـ 1000 صف افتراضياً.
+  // بدون ترقيم الصفحات كانت الأجهزة الجديدة تجلب أحدث 1000 سجل فقط
+  // فتظهر البيانات ناقصة (مواعيد/جلسات قديمة مفقودة من التقويم).
+  // نجلب الآن كل الصفحات عبر range() حتى تنتهي البيانات.
   async select(table) {
-    const { data, error } = await _supaClient.from(table).select('*').order('updated_at', { ascending: false });
-    if (error) { console.warn(`[sb.select] ${table}:`, error.message); return []; }
-    return (data || []).map(_normRow);
+    const PAGE = 1000, out = [];
+    for (let from = 0; from < 200000; from += PAGE) {
+      const { data, error } = await _supaClient.from(table).select('*')
+        .order('updated_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) {
+        console.warn(`[sb.select] ${table}:`, error.message);
+        if (out.length) break;            // احتفظ بما جُلب
+        throw new Error(`[${table}] ${error.message}`);
+      }
+      const chunk = data || [];
+      out.push(...chunk);
+      if (chunk.length < PAGE) break;     // آخر صفحة
+    }
+    return out.map(_normRow);
   },
 
   // إدراج أو تحديث سجل (التوقيت updated_at يُكتب من قاعدة البيانات عبر trigger لتوحيد الساعة بين الأجهزة)
@@ -1124,9 +1141,23 @@ function ClinicProvider({ children }) {
     if(_hydratedRef.current) return; _hydratedRef.current=true;
     (async()=>{
       const map={ mc6_patients:setPatients, mc6_records:setRecords, mc6_sessions:setSessions, mc6_appointments:setApts, mc6_finance:setFinance, mc6_expenses:setExpenses, mc6_inbody:setInbody, mc6_notes:setNotes, mc6_staff:setStaff, mc6_inventory:setInventory, mc6_hep:setHepLib, mc6_attendance:setAttendance, mc6_tasks:setTasks };
-      const cur={ mc6_patients:patients, mc6_records:records, mc6_sessions:sessions, mc6_appointments:appointments, mc6_finance:finance, mc6_expenses:expenses, mc6_inbody:inbody, mc6_notes:notes, mc6_staff:staff, mc6_inventory:inventory, mc6_hep:hepLib, mc6_attendance:attendance, mc6_tasks:tasks };
+      // ⚠️ لا نستبدل الحالة الحالية أبداً — قد يكون السحب من السحابة قد سبقنا
+      // (سباق قديم كان يستبدل بيانات السحابة الطازجة بنسخة محلية قديمة → بيانات ناقصة).
+      // ندمج بالمعرّف مع ترجيح الأحدث (LWW).
       for(const k of Object.keys(map)){
-        try{ const v=await idbGet(k); if(Array.isArray(v) && v.length > (cur[k]?.length||0)) map[k](v); }catch(e){}
+        try{
+          const v = await idbGet(k);
+          if(!Array.isArray(v) || !v.length) continue;
+          map[k](prev => {
+            const merged = Object.fromEntries((prev||[]).map(r => [r.id, r]));
+            for(const lr of v){
+              if(!lr || lr.id==null) continue;
+              const ex = merged[lr.id];
+              if(!ex || (lr.updated_at && (!ex.updated_at || lr.updated_at > ex.updated_at))) merged[lr.id] = lr;
+            }
+            return Object.values(merged).filter(r => !r.deleted);
+          });
+        }catch(e){}
       }
     })();
   }, []);
@@ -1271,6 +1302,7 @@ function ClinicProvider({ children }) {
         mc_inventory: setInventory, mc_hep: setHepLib,
         mc_attendance: setAttendance, mc_tasks: setTasks,
       };
+      const pullErrs = [];
       await Promise.all(
         Object.entries(setters).map(async ([table, setter]) => {
           try {
@@ -1300,9 +1332,12 @@ function ClinicProvider({ children }) {
                   .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''));
               });
             }
-          } catch(e) { /* table may not exist yet */ }
+          } catch(e) { pullErrs.push(e.message || String(e)); }
         })
       );
+      // لا نُخفي فشل الجلب بعد الآن — بيانات ناقصة صامتة هي أسوأ من رسالة خطأ
+      if (pullErrs.length) setSyncError('تعذّر جلب بعض الجداول: ' + pullErrs.join(' | '));
+      else setSyncError('');
       // KV: settings & categories
       try {
         const cloudSettings = await sb.selectKV('settings');
