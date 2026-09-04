@@ -493,25 +493,47 @@ const _missingCol = (error) => {
   return null;
 };
 
+// ── تنظيف القيم قبل الرفع ──
+// السبب الجذري لخطأ «invalid input syntax for type timestamp with time zone: ""»:
+// التطبيق يرسل سلسلة فارغة '' لحقل تاريخ/رقم فارغ، وPostgres يرفض '' لأي عمود
+// غير نصّي — والرسالة لا تذكر اسم العمود، لذلك يصعب تشخيصها. الحل: '' ⇦ null.
+const _clean = (v) => {
+  if (v === '' || v === undefined) return null;
+  if (typeof v === 'number' && !isFinite(v)) return null;
+  return v;
+};
+// الأعمدة الأساسية التي يجب أن تبقى دائماً أعمدة حقيقية (لا تُنقل إلى data)
+const CORE_COLS = new Set(['id', 'deleted', 'deleted_at', 'created_at', 'updated_at', 'data']);
+// خطأ «نوع بيانات غير مطابق» — عمود قديم في القاعدة نوعه لا يطابق ما يرسله التطبيق
+const _isTypeErr = (error) => {
+  const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
+  return m.includes('invalid input syntax') || m.includes('invalid input value')
+      || m.includes('cannot be cast') || m.includes('out of range');
+};
+
+// ── تطبيع أي سجل قادم من Supabase (select / realtime / سلة المحذوفات) ──
+// 1) دمج الأعمدة الحقيقية مع الحقول المحفوظة داخل عمود data.
+// 2) إعادة null إلى '' لأن التطبيق كُتب على أساس النصوص الفارغة (p.name.includes / date.localeCompare)
+//    فلو وصل null لانهارت الشاشة. الأعمدة الأساسية تبقى كما هي.
+const _normRow = (row) => {
+  if (!row) return null;
+  const extra = (row.data && typeof row.data === 'object') ? row.data : null;
+  const out = extra ? { ...row, ...extra } : { ...row };
+  delete out.data;
+  for (const k in out) if (out[k] === null && !CORE_COLS.has(k)) out[k] = '';
+  out.id = row.id;
+  out.updated_at = row.updated_at;
+  out.deleted = !!(row.deleted || (extra && extra.deleted));
+  return out;
+};
+
 // ── REST helper (يستخدم الـ SDK الرسمي) ──
 const sb = {
   // جلب جميع السجلات من جدول (بما فيها شواهد الحذف deleted=true ليتمكن السحب من إزالتها محلياً)
   async select(table) {
     const { data, error } = await _supaClient.from(table).select('*').order('updated_at', { ascending: false });
     if (error) { console.warn(`[sb.select] ${table}:`, error.message); return []; }
-    return (data || []).map(row => {
-      const extra = row.data;
-      if (extra && typeof extra === 'object') {
-        // الأعمدة الحقيقية + الحقول المحفوظة داخل data (الحقول التي لا عمود لها)
-        const merged = { ...row, ...extra };
-        delete merged.data;
-        merged.id = row.id;
-        merged.updated_at = row.updated_at;
-        merged.deleted = !!(row.deleted || extra.deleted);
-        return merged;
-      }
-      return row;
-    });
+    return (data || []).map(_normRow);
   },
 
   // إدراج أو تحديث سجل (التوقيت updated_at يُكتب من قاعدة البيانات عبر trigger لتوحيد الساعة بين الأجهزة)
@@ -520,35 +542,48 @@ const sb = {
   async upsert(table, data) {
     const originals = Array.isArray(data) ? data : [data];
     // الحقول التي سبق أن تبيّن أن لا عمود لها → تُوضع مباشرة في data
-    const build = (skip) => originals.map(r => {
+    // dumpAll = خطة الطوارئ: نقل كل الحقول إلى data عندما تكون أنواع الأعمدة القديمة خاطئة
+    const build = (skip, dumpAll) => originals.map(r => {
       const o = {}, extra = {};
       for (const k in r) {
         if (k === 'data') continue;
-        if (skip.has(k)) extra[k] = r[k]; else o[k] = r[k];
+        if (skip.has(k) || (dumpAll && !CORE_COLS.has(k))) extra[k] = r[k];
+        else o[k] = _clean(r[k]);
       }
       o.deleted = !!r.deleted;
       if (Object.keys(extra).length) o.data = extra;
       return o;
     });
-    let skip = _skipCols(table);
-    let rows = build(skip);
+    let skip = _skipCols(table), dumpAll = false;
+    let rows = build(skip, dumpAll);
     for (let i = 0; i < 25; i++) {
       const { error } = await _supaClient.from(table).upsert(rows, { onConflict: 'id' });
       if (!error) return true;
       const bad = _missingCol(error);
-      if (!bad) throw new Error(error.message);
       if (bad === 'data') {
         // لا يوجد عمود data — لم يبقَ إلا الإسقاط الصريح للحقول الزائدة
         rows = rows.map(r => { const o = { ...r }; delete o.data; return o; });
         console.warn(`[sb.upsert] ${table}: لا يوجد عمود data — بعض الحقول لن تُرفع. شغّل supabase_migration.sql.`);
         continue;
       }
-      _addSkipCol(table, bad);
-      console.warn(`[sb.upsert] ${table}: عمود «${bad}» غير موجود — نُقل إلى data. شغّل supabase_migration.sql لأداء أفضل.`);
-      skip = _skipCols(table);
-      rows = build(skip);
+      if (bad) {
+        _addSkipCol(table, bad);
+        console.warn(`[sb.upsert] ${table}: عمود «${bad}» غير موجود — نُقل إلى data. شغّل supabase_migration.sql لأداء أفضل.`);
+        skip = _skipCols(table);
+        rows = build(skip, dumpAll);
+        continue;
+      }
+      // خطأ نوع بيانات (رسالة PostgREST لا تذكر اسم العمود) — عمود قديم بنوع خاطئ.
+      // خطة الطوارئ: نرفع كل الحقول داخل data حتى لا يعلق السجل ولا تضيع أي معلومة.
+      if (_isTypeErr(error) && !dumpAll) {
+        dumpAll = true;
+        rows = build(skip, dumpAll);
+        console.warn(`[sb.upsert] ${table}: نوع عمود غير مطابق (${error.message}) — رُفعت الحقول داخل data. شغّل supabase_migration.sql (القسم 2.4) لإصلاح أنواع الأعمدة.`);
+        continue;
+      }
+      throw new Error(`[${table}] ${error.message}`);
     }
-    throw new Error('تعذّر رفع السجل — شغّل supabase_migration.sql من SQL Editor');
+    throw new Error(`[${table}] تعذّر رفع السجل — شغّل supabase_migration.sql من SQL Editor`);
   },
 
   // حذف ناعم (Tombstone) — لا يُحذف السجل فعلياً بل يُعلَّم كمحذوف.
@@ -567,9 +602,7 @@ const sb = {
     const { data, error } = await _supaClient.from(table).select('*')
       .eq('deleted', true).order('deleted_at', { ascending: false }).limit(500);
     if (error) return [];
-    return (data || []).map(row => (row.data && typeof row.data === 'object')
-      ? { ...row.data, id: row.id, updated_at: row.updated_at, deleted_at: row.deleted_at }
-      : row);
+    return (data || []).map(_normRow);
   },
   // إلغاء الحذف الناعم — يعود السجل لكل الأجهزة عبر Realtime
   async restore(table, id) {
@@ -651,6 +684,7 @@ const PENDING_KEY = 'mc6_pending_ops';
 // أرشيف العمليات التي فشلت نهائياً (حتى لا تبقى معلّقة للأبد وتُجمِّد العدّاد)
 const FAILED_KEY  = 'mc6_failed_ops';
 const MAX_OP_TRIES = 6;
+const getFailedOps = () => { try { return JSON.parse(localStorage.getItem(FAILED_KEY) || '[]'); } catch { return []; } };
 
 const getPending = () => { try { return JSON.parse(localStorage.getItem(PENDING_KEY)||'[]'); } catch { return []; } };
 const savePending = (ops) => localStorage.setItem(PENDING_KEY, JSON.stringify(ops));
@@ -824,6 +858,22 @@ const DEF_SETTINGS = {
   website:'', taxNum:'', clinicSlogan:'الحركة طريق الصحة',
   // Labels customization (The Factory)
   termPatient:'مريض', termSession:'جلسة', termClinic:'عيادة',
+  // ── قالب رسالة تذكير موعد الغد (قابل للتعديل من الإعدادات) ──
+  // المتغيّرات المتاحة: {name} {date} {time} {service} {therapist} {clinic} {phone}
+  reminderTemplate:
+`مرحباً {name} 🌿
+نذكّركم بموعدكم غداً {date} الساعة {time} في {clinic}.
+{therapist} بانتظاركم، ولا داعي للقلق — الجلسة مريحة وتُجرى بلطف وعلى راحتكم تماماً 💙
+يُفضَّل الحضور قبل الموعد بـ ١٠ دقائق وارتداء ملابس مريحة.
+لأي استفسار أو تعديل للموعد تواصلوا معنا: {phone}
+نتمنّى لكم دوام العافية 🙏`,
+};
+
+// تعبئة قالب الرسالة بقيم الموعد — بلا تعابير نمطية (regex) حفاظاً على سلامة الملف
+const fillTemplate = (tpl, vars) => {
+  let out = String(tpl || '');
+  for (const k in vars) out = out.split('{' + k + '}').join(vars[k] == null ? '' : String(vars[k]));
+  return out;
 };
 
 const DEF_CATEGORIES = {
@@ -1044,6 +1094,7 @@ function ClinicProvider({ children }) {
   const [syncStatus,  setSyncStatus] = useState('idle'); // idle | syncing | online | offline | error
   const [lastSync,    setLastSync]   = useState(() => ls('mc6_last_sync', null));
   const [pendingCount,setPendingCount] = useState(() => getPending().length);
+  const [failedCount,setFailedCount]   = useState(() => getFailedOps().length);
   const [syncError,   setSyncError]  = useState('');   // آخر سبب فشل في الرفع (لتشخيص التعليق)
   const isOnline = useRef(navigator.onLine);
   const flushingRef = useRef(false);                    // يمنع تشغيل عمليتي رفع متزامنتين
@@ -1184,10 +1235,25 @@ function ClinicProvider({ children }) {
       } catch(e) {}
     }
     setSyncError(lastErr);
+    setFailedCount(getFailedOps().length);
     setSyncStatus(failed.length === 0 ? 'online' : 'error');
     if (failed.length === 0) setLastSync(new Date().toISOString());
     flushingRef.current = false;
   }, []);
+
+  // ── العمليات المؤرشفة (فشلت MAX_OP_TRIES مرة) ──
+  // بعد إصلاح سبب الفشل (تشغيل الترحيل مثلاً) يمكن إعادتها للطابور بدل ضياعها.
+  const retryFailedOps = useCallback(async () => {
+    const arch = getFailedOps();
+    if (!arch.length) { showToast('لا توجد عمليات مؤرشفة', 'info'); return; }
+    _resetSkipCols();
+    savePending([...getPending(), ...arch.map(o => ({ ...o, tries: 0, error: '' }))]);
+    try { localStorage.removeItem(FAILED_KEY); } catch(e) {}
+    setFailedCount(0);
+    setPendingCount(getPending().length);
+    await flushPending();
+    showToast('أُعيدت ' + arch.length + ' عملية إلى الطابور');
+  }, [flushPending]);
 
   // ── Pull ALL data from Supabase (full sync) ──
   // force === true → استرجاع كامل: تُستبدل النسخة المحلية بنسخة السحابة (يزيل أي تعليق/تعارض محلي)
@@ -1286,14 +1352,8 @@ function ClinicProvider({ children }) {
     // معالج التغييرات الواردة من Supabase Realtime
     const handleChange = (table, setter) => (payload) => {
       const { eventType, new: newRow, old: oldRow } = payload;
-      // تطبيع السجل (دعم flat columns)
-      const normalize = (row) => {
-        if (!row) return null;
-        if (row.data && typeof row.data === 'object') {
-          return { ...row.data, id: row.id, updated_at: row.updated_at, deleted: row.deleted || row.data.deleted || false };
-        }
-        return row;
-      };
+      // تطبيع السجل — نفس منطق sb.select (دمج data + إعادة null إلى '')
+      const normalize = _normRow;
 
       if (eventType === 'INSERT') {
         const rec = normalize(newRow);
@@ -1696,6 +1756,7 @@ function ClinicProvider({ children }) {
     inbody, notes, staff, inventory, hepLib, attendance, tasks, audit, toast, showToast,
     // Sync state
     syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending, pushAllToCloud,
+    failedCount, retryFailedOps,
     // Patient CRUD
     addPatient:patCRUD.add, updatePatient:patCRUD.update, deletePatient:patCRUD.delete,
     // Record CRUD
@@ -1831,8 +1892,53 @@ function InfoGrid({items}){
 // ══════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════
+// ── محرّر قالب رسالة تذكير الموعد ──
+// النص محفوظ في الإعدادات (يُزامَن عبر Supabase) فيراه كل الأجهزة.
+const REMINDER_VARS = [
+  ['{name}','اسم المريض'], ['{date}','تاريخ الموعد'], ['{time}','وقت الموعد'],
+  ['{service}','الخدمة'], ['{therapist}','المعالج'], ['{clinic}','اسم العيادة'], ['{phone}','هاتف العيادة'],
+];
+function ReminderTemplateModal({value, vars, onSave, onClose}){
+  const [txt,setTxt] = useState(value);
+  const insert = (tag) => setTxt(t=>t+tag);
+  return(
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{maxWidth:680}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>✏️ نص رسالة تذكير الموعد</h2>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-info" style={{marginBottom:12}}>
+            اكتب الرسالة كما تحب. المتغيّرات بين الأقواس تُستبدل تلقائياً ببيانات كل مريض عند الإرسال.
+          </div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:10}}>
+            {REMINDER_VARS.map(([tag,label])=>(
+              <button key={tag} className="btn btn-sm btn-ghost" title={label} onClick={()=>insert(tag)}
+                style={{fontFamily:'monospace',fontSize:12}}>{tag}</button>
+            ))}
+          </div>
+          <textarea className="input" value={txt} onChange={e=>setTxt(e.target.value)} rows={10}
+            style={{width:'100%',lineHeight:1.9,fontSize:14,resize:'vertical'}}/>
+          <div style={{marginTop:14,fontSize:12.5,fontWeight:800,color:'var(--text-mid)',marginBottom:6}}>👁 معاينة الرسالة كما ستصل للمريض:</div>
+          <div style={{whiteSpace:'pre-wrap',background:'#dcf8c6',border:'1px solid #bbf7d0',borderRadius:12,
+                       padding:'12px 14px',fontSize:14,lineHeight:1.9,color:'#111'}}>
+            {fillTemplate(txt, vars||{})}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={()=>setTxt(DEF_SETTINGS.reminderTemplate)}>↩️ استعادة النص الافتراضي</button>
+          <button className="btn btn-outline" onClick={onClose}>إلغاء</button>
+          <button className="btn btn-primary" onClick={()=>onSave(txt)}>💾 حفظ النص</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({navigate}){
-  const {patients,appointments,records,sessions,finance,expenses,inventory,inbody,settings,updateAppointment} = useClinic();
+  const {patients,appointments,records,sessions,finance,expenses,inventory,inbody,settings,updateAppointment,updateSettings} = useClinic();
+  const [editReminder,setEditReminder] = useState(false);
   const todayStr = today();
   const todayApts = appointments.filter(a=>a.date===todayStr);
   const totalRev = finance.filter(f=>f.status==='مدفوع').reduce((s,f)=>s+(f.paid||0),0);
@@ -1862,6 +1968,31 @@ function Dashboard({navigate}){
     if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
     const msg = `مرحباً ${a.patientName||''} 🌿\nنذكّركم بموعدكم في ${settings.clinicName||'العيادة'} اليوم ${a.date} الساعة ${a.time}.\nبانتظاركم 🙏`;
     window.open(`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+  // ── 🔔 تذكير مواعيد الغد برسالة مطمئنة (القالب قابل للتعديل) ──
+  const tomorrowStr = (()=>{ const d=new Date(); d.setDate(d.getDate()+1);
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+  const tomorrowApts = appointments
+    .filter(a=>a.date===tomorrowStr && a.status!=='cancelled' && a.status!=='missed')
+    .sort((a,b)=>String(a.time).localeCompare(String(b.time)));
+  const reminderVars = (a) => {
+    const p = patients.find(x=>String(x.id)===String(a.patientId)) || {};
+    return {
+      name: a.patientName || p.name || '',
+      date: a.date || '', time: a.time || '',
+      service: a.service || 'جلسة علاج طبيعي',
+      therapist: a.therapist || p.assignedTherapist || settings.therapistName || '',
+      clinic: settings.clinicName || 'العيادة',
+      phone: settings.phone || '',
+    };
+  };
+  const buildReminder = (a) => fillTemplate(settings.reminderTemplate || DEF_SETTINGS.reminderTemplate, reminderVars(a));
+  const sendReminder = (a) => {
+    const p = patients.find(x=>String(x.id)===String(a.patientId)) || {};
+    let ph=(p.phone||a.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
+    if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
+    window.open(`https://wa.me/${ph}?text=${encodeURIComponent(buildReminder(a))}`,'_blank');
+    updateAppointment(a.id, {...a, reminded:true, remindedAt:new Date().toISOString()});
   };
   const recallPatient = (p) => {
     let ph=(p.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
@@ -2007,6 +2138,48 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
           </div>
         </div>
       </div>
+
+      {tomorrowApts.length>0 && (
+        <div className="card" style={{marginTop:20,borderTop:'3px solid #0891b2'}}>
+          <div className="card-header">
+            <h3>🔔 تذكير مواعيد الغد ({tomorrowApts.length})</h3>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <span style={{fontSize:12,color:'#6b7280'}}>{tomorrowStr}</span>
+              <button className="btn btn-sm btn-outline" onClick={()=>setEditReminder(true)}>✏️ تعديل نص الرسالة</button>
+            </div>
+          </div>
+          <div className="card-body" style={{padding:0}}>
+            <table className="data-table">
+              <thead><tr><th>الوقت</th><th>المريض</th><th>الخدمة</th><th>المعالج</th><th>الحالة</th><th>إرسال</th></tr></thead>
+              <tbody>
+                {tomorrowApts.map(a=>(
+                  <tr key={a.id}>
+                    <td><strong>{a.time}</strong></td>
+                    <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{a.patientName}</td>
+                    <td>{a.service||'—'}</td>
+                    <td>{a.therapist||'—'}</td>
+                    <td>{a.reminded
+                      ? <span style={{color:'#059669',fontWeight:800,fontSize:12}}>✅ تم التذكير</span>
+                      : <span style={{color:'#d97706',fontWeight:800,fontSize:12}}>⏳ بانتظار التذكير</span>}</td>
+                    <td><button className="btn btn-sm" style={{background:'#059669',color:'#fff'}} onClick={()=>sendReminder(a)}>📱 إرسال</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {editReminder && (
+        <ReminderTemplateModal
+          value={settings.reminderTemplate || DEF_SETTINGS.reminderTemplate}
+          vars={tomorrowApts[0] ? reminderVars(tomorrowApts[0]) : {
+            name:'أحمد محمد', date:tomorrowStr, time:'10:30', service:'جلسة علاج طبيعي',
+            therapist:settings.therapistName||'', clinic:settings.clinicName||'العيادة', phone:settings.phone||''}}
+          onSave={(t)=>{ updateSettings({reminderTemplate:t}); setEditReminder(false); }}
+          onClose={()=>setEditReminder(false)}
+        />
+      )}
 
       {unresolvedApts.length>0 && (
         <div className="card" style={{marginTop:20,borderTop:'3px solid #dc2626'}}>
@@ -6370,9 +6543,11 @@ function CategoriesPage(){
 function SettingsPage(){
   const {settings, updateSettings, exportBackup, importBackup, mergeImport, resetSystem, categories,
          audit, syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending, pushAllToCloud,
+         failedCount, retryFailedOps,
          exportExcel, snapshots, backupAgeDays, backupDue,
          folderSupported, backupDir, chooseBackupFolder, saveBackupToFolder} = useClinic();
   const [tab,setTab] = useState('clinic');
+  const [editRem,setEditRem] = useState(false);
   const [importing,setImporting] = useState(false);
   const [auditFilter,setAuditFilter] = useState('');
   const [role,setRole] = useState(localStorage.getItem('mc_role')||'admin');
@@ -6483,7 +6658,29 @@ function SettingsPage(){
               <TF label="الرقم الضريبي / السجل التجاري" value={form.taxNum} onChange={v=>f('taxNum',v)}/>
             </div>
             <TF label="العملة" value={form.currency} onChange={v=>f('currency',v)} placeholder="ل.س"/>
+
+            <div style={{marginTop:20,paddingTop:16,borderTop:'1px solid var(--border)'}}>
+              <div style={{fontSize:14,fontWeight:800,marginBottom:6}}>🔔 رسالة تذكير موعد الغد</div>
+              <div style={{fontSize:12.5,color:'var(--text-mid)',fontWeight:600,marginBottom:10,lineHeight:1.8}}>
+                تُرسل للمريض عبر واتساب من بطاقة «تذكير مواعيد الغد» في لوحة التحكم. النص مشترك بين كل الأجهزة.
+              </div>
+              <div style={{whiteSpace:'pre-wrap',background:'#f8fafc',border:'1px solid var(--border)',borderRadius:10,
+                            padding:'10px 12px',fontSize:12.5,lineHeight:1.9,color:'var(--text-mid)',marginBottom:10,
+                            maxHeight:150,overflow:'auto'}}>
+                {form.reminderTemplate || DEF_SETTINGS.reminderTemplate}
+              </div>
+              <button className="btn btn-outline btn-sm" onClick={()=>setEditRem(true)}>✏️ تعديل نص الرسالة</button>
+            </div>
           </div>
+          {editRem && (
+            <ReminderTemplateModal
+              value={form.reminderTemplate || DEF_SETTINGS.reminderTemplate}
+              vars={{name:'أحمد محمد', date:today(), time:'10:30', service:'جلسة علاج طبيعي',
+                     therapist:form.therapistName||'', clinic:form.clinicName||'العيادة', phone:form.phone||''}}
+              onSave={(t)=>{ f('reminderTemplate',t); setEditRem(false); }}
+              onClose={()=>setEditRem(false)}
+            />
+          )}
         </div>
       )}
 
@@ -6815,7 +7012,16 @@ function SettingsPage(){
                   onClick={()=>{ if(confirm('تفريغ طابور العمليات المعلّقة على هذا الجهاز فقط.\nالبيانات في السحابة لن تتأثر — استخدمه إذا بقي العدّاد عالقاً.\n\nمتابعة؟')){ savePending([]); location.reload(); } }}>
                   🧹 تفريغ الطابور العالق
                 </button>
+                <button className="btn btn-outline" style={{borderColor:'var(--orange)',color:'var(--orange)'}} disabled={failedCount===0||syncStatus==='syncing'}
+                  onClick={()=>{ if(confirm('إعادة محاولة رفع العمليات التي فشلت سابقاً وتمت أرشفتها.\nاستخدمه بعد تشغيل supabase_migration.sql.\n\nمتابعة؟')) retryFailedOps(); }}>
+                  ♻️ إعادة محاولة العمليات المؤرشفة {failedCount>0?'('+failedCount+')':''}
+                </button>
               </div>
+              {failedCount>0 && (
+                <div className="alert alert-info" style={{marginTop:12,fontSize:13}}>
+                  📦 يوجد <strong>{failedCount}</strong> عملية فشلت وتمّت أرشفتها. شغّل <strong>supabase_migration.sql</strong> ثم اضغط «♻️ إعادة محاولة العمليات المؤرشفة».
+                </div>
+              )}
               {syncError && (
                 <div className="alert alert-warning" style={{marginTop:12}}>
                   ⚠️ <strong>سبب تعليق الرفع:</strong> <span style={{fontFamily:'monospace',fontSize:12}}>{syncError}</span>
@@ -8135,8 +8341,9 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       {id:'inventory', icon:'📦', label:'المخزون', badge: lowStock.length||null},
     ]},
     { section:'التحليل', items:[
-      {id:'analytics', icon:'🧠', label:'التحليل التنبئي'},
-      {id:'reports',   icon:'📊', label:'التقارير'},
+      // التقارير والتحليل التنبئي تعرضان أرقاماً مالية — تُخفى تماماً في ملف الموظفين
+      ...(STAFF_MODE ? [] : [{id:'analytics', icon:'🧠', label:'التحليل التنبئي'}]),
+      ...(STAFF_MODE ? [] : [{id:'reports',   icon:'📊', label:'التقارير'}]),
       {id:'xray',      icon:'🩻', label:'مقارنة الأشعة'},
     ]},
     { section:'المتابعة والكادر', items:[
@@ -8346,12 +8553,17 @@ function OpsReportPage(){
 
   // إنجاز مهام الكادر لهذه الفترة
   const pk = periodKeyFor(period);
-  const rolePerf = TASK_ROLES.map(r=>{
-    const tmpl = (TASK_TEMPLATES[r.key]||{})[period]||[];
-    const doneCount = tasks.filter(t=>t.role===r.key && t.period===period && t.periodKey===pk && t.done).length;
-    const pct = tmpl.length>0 ? Math.round(Math.min(doneCount,tmpl.length)/tmpl.length*100) : 0;
-    return {...r, total:tmpl.length, done:Math.min(doneCount,tmpl.length), pct};
-  });
+  // الإنجاز صار لكل موظف على حدة (لا يُحتسب إنجاز موظف لزميله)
+  const rolePerf = staff.filter(s=>s.status!=='متوقف').map(s=>{
+    const rk   = STAFF_ROLE_MAP[s.role] || 'physio';
+    const ro   = TASK_ROLES.find(r=>r.key===rk) || {icon:'👤',label:s.role||'—'};
+    const tmpl = (TASK_TEMPLATES[rk]||{})[period]||[];
+    const cust = tasks.filter(t=>t.custom && t.role===rk && t.period===period && (!t.staffName || t.staffName===s.name)).length;
+    const total = tmpl.length + cust;
+    const doneCount = tasks.filter(t=>!t.custom && t.role===rk && t.period===period && t.periodKey===pk && t.staffName===s.name && t.done).length;
+    const pct = total>0 ? Math.round(Math.min(doneCount,total)/total*100) : 0;
+    return {key:s.id, icon:ro.icon, label:s.name+' · '+ro.label, total, done:Math.min(doneCount,total), pct};
+  }).sort((a,b)=>b.pct-a.pct);
 
   const KPI = [
     ['🆕 مرضى جدد', newPatients.length, '#0891b2'],
@@ -8548,6 +8760,7 @@ function TaskCenterPage(){
   const [myName,setMyName] = useState(localStorage.getItem('mc_staff_name')||'');
   const [period,setPeriod] = useState('daily');
   const [newTask,setNewTask] = useState('');
+  const [assignMine,setAssignMine] = useState(true);
   const isAdmin = !STAFF_MODE;
   const todayStr = today();
   useEffect(()=>{ localStorage.setItem('mc_role',role); },[role]);
@@ -8556,21 +8769,29 @@ function TaskCenterPage(){
   const pk = periodKeyFor(period);
   const tmpl = (TASK_TEMPLATES[role]||{})[period]||[];
   // القائمة الموحّدة = المهام الجاهزة (من القوالب) + مهام الإدارة اليدوية (custom)
-  const customDefs = tasks.filter(t=>t.custom && t.role===role && t.period===period);
+  // مهمة الإدارة قد تكون عامة للدور (بلا staffName) أو خاصة بموظف واحد
+  const customDefs = tasks.filter(t=>t.custom && t.role===role && t.period===period && (!t.staffName || t.staffName===myName));
   const items = [
     ...tmpl.map((title,i)=>({key:String(i), title, custom:false})),
-    ...customDefs.map(d=>({key:d.id, title:d.title, custom:true, defId:d.id})),
+    ...customDefs.map(d=>({key:d.id, title:d.title, custom:true, defId:d.id, owner:d.staffName||''})),
   ];
-  const recFor = (key) => tasks.find(t=>!t.custom && t.role===role && t.period===period && t.periodKey===pk && t.taskKey===key);
+  // 🔒 سجل الإنجاز خاص بكل موظف: staffName جزء من هوية السجل،
+  // فإنجاز موظف لمهمته لا يظهر أبداً عند زميل آخر ولو كان بنفس الدور.
+  const slug = (s)=>String(s||'').trim().split(' ').join('_');
+  const recFor = (key) => tasks.find(t=>!t.custom && t.role===role && t.period===period && t.periodKey===pk
+                                     && t.taskKey===key && (t.staffName||'')===myName);
+  // الموظف يعلّم مهامه هو فقط؛ الإدارة تستطيع تعليم مهام أي موظف تختاره
+  const canToggle = !!myName;
   const toggle = (key, title) => {
-    if(!isAdmin) return; // الموظف عرض فقط — الإدارة تعلّم الإنجاز
+    if(!myName){ alert('اختر اسمك من «فريق العمل» أولاً حتى تُحفظ مهامك باسمك.'); return; }
     const ex = recFor(key);
     if(ex) updateTask(ex.id, {...ex, done:!ex.done});
-    else addTask({id:'TSK-'+period+'-'+role+'-'+key+'-'+pk, role, staffName:myName, period, taskKey:key, title, periodKey:pk, done:true});
+    else addTask({id:'TSK-'+period+'-'+role+'-'+slug(myName)+'-'+key+'-'+pk, role, staffName:myName, period, taskKey:key, title, periodKey:pk, done:true});
   };
   const addCustom = () => {
     const t = newTask.trim(); if(!t) return;
-    addTask({id:uid('TSKDEF'), custom:true, role, period, title:t});
+    // إن كان هناك موظف مختار تُسند المهمة له وحده، وإلا فهي لكل من في الدور
+    addTask({id:uid('TSKDEF'), custom:true, role, period, title:t, staffName:assignMine?myName:''});
     setNewTask('');
   };
   const delCustom = (id) => { if(confirm('حذف هذه المهمة من القائمة؟')) deleteTask(id); };
@@ -8595,7 +8816,7 @@ function TaskCenterPage(){
   return(
     <div className="page-content">
       <div className="page-header">
-        <div><h1 className="page-title">✅ مركز مهام الكادر</h1><p className="page-subtitle">{isAdmin?'الإدارة تضيف المهام وتعلّم إنجازها — وتظهر للموظفين للاطلاع':'مهامك اليومية والأسبوعية والشهرية (عرض فقط — الإدارة تعلّم الإنجاز)'}</p></div>
+        <div><h1 className="page-title">✅ مركز مهام الكادر</h1><p className="page-subtitle">🔒 لكل موظف مهامه وإنجازه الخاص — ما تُنجزه لا يظهر عند أي زميل آخر{isAdmin?' · الإدارة تضيف المهام وترى إنجاز الجميع في «التقرير التشغيلي»':''}</p></div>
       </div>
 
       <div className="card" style={{marginBottom:16}}>
@@ -8634,23 +8855,37 @@ function TaskCenterPage(){
         <div className="card">
           <div className="card-header">
             <h3>{roleObj.icon} مهام {PERIOD_LABELS[period]} — {roleObj.label}</h3>
-            <span style={{fontSize:13,fontWeight:800,color:pct>=70?'#059669':'#d97706'}}>{doneCount}/{tmpl.length} · {pct}%</span>
+            <span style={{fontSize:13,fontWeight:800,color:pct>=70?'#059669':'#d97706'}}>{doneCount}/{items.length} · {pct}%</span>
           </div>
           <div className="card-body">
             <div style={{height:8,background:'#e5e7eb',borderRadius:6,overflow:'hidden',marginBottom:14}}>
               <div style={{width:pct+'%',height:'100%',background:pct>=70?'#059669':'#d97706',transition:'width .3s'}}/>
             </div>
+            {!myName && (
+              <div className="alert alert-warning" style={{marginBottom:12}}>
+                👤 اختر اسمك من «فريق العمل» بالأعلى — مهامك وإنجازك يُحفظان باسمك ولا يظهران لأي زميل آخر.
+              </div>
+            )}
             {isAdmin && (
-              <div style={{display:'flex',gap:8,marginBottom:12}}>
-                <input className="input" value={newTask} onChange={e=>setNewTask(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')addCustom();}} placeholder={'أضف مهمة جديدة لـ '+(TASK_ROLES.find(r=>r.key===role)||{}).label+' ('+PERIOD_LABELS[period]+')…'} style={{flex:1}}/>
-                <button className="btn btn-primary" onClick={addCustom}>➕ إضافة</button>
+              <div style={{marginBottom:12}}>
+                <div style={{display:'flex',gap:8}}>
+                  <input className="input" value={newTask} onChange={e=>setNewTask(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')addCustom();}} placeholder={'أضف مهمة جديدة ('+PERIOD_LABELS[period]+')…'} style={{flex:1}}/>
+                  <button className="btn btn-primary" onClick={addCustom}>➕ إضافة</button>
+                </div>
+                <label style={{display:'flex',alignItems:'center',gap:8,marginTop:8,fontSize:12.5,fontWeight:700,color:'var(--text-mid)',cursor:myName?'pointer':'not-allowed'}}>
+                  <input type="checkbox" checked={assignMine&&!!myName} disabled={!myName} onChange={e=>setAssignMine(e.target.checked)} style={{width:16,height:16,accentColor:'#7c3aed'}}/>
+                  {myName ? <span>خاصة بـ <strong>{myName}</strong> وحده (بدون التحديد: تظهر لكل من في دور «{roleObj.label}»)</span>
+                          : <span>اختر موظفاً لتخصيص المهمة له</span>}
+                </label>
               </div>
             )}
             {items.length===0 && <div className="empty-state" style={{padding:20}}><p>لا مهام بعد.</p></div>}
             {items.map((it)=>{ const done=recFor(it.key)?.done; return(
-              <label key={it.key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 8px',borderBottom:'1px solid #f1f5f9',cursor:isAdmin?'pointer':'default'}}>
-                <input type="checkbox" checked={!!done} disabled={!isAdmin} onChange={()=>toggle(it.key,it.title)} style={{width:18,height:18,accentColor:'#059669',cursor:isAdmin?'pointer':'not-allowed'}}/>
-                <span style={{flex:1,fontSize:14,textDecoration:done?'line-through':'none',color:done?'#9ca3af':'#1e293b'}}>{it.title}{it.custom && <em style={{color:'#7c3aed',fontSize:11,marginRight:6,fontStyle:'normal'}}> · مهمة الإدارة</em>}</span>
+              <label key={it.key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 8px',borderBottom:'1px solid #f1f5f9',cursor:canToggle?'pointer':'default'}}>
+                <input type="checkbox" checked={!!done} disabled={!canToggle} onChange={()=>toggle(it.key,it.title)} style={{width:18,height:18,accentColor:'#059669',cursor:canToggle?'pointer':'not-allowed'}}/>
+                <span style={{flex:1,fontSize:14,textDecoration:done?'line-through':'none',color:done?'#9ca3af':'#1e293b'}}>{it.title}
+                  {it.custom && <em style={{color:'#7c3aed',fontSize:11,marginRight:6,fontStyle:'normal'}}> · {it.owner?('خاصة بـ '+it.owner):'مهمة الإدارة'}</em>}
+                </span>
                 {isAdmin && it.custom && <button className="row-action-btn" title="حذف المهمة" style={{color:'#dc2626'}} onClick={(e)=>{e.preventDefault();delCustom(it.defId);}}>🗑️</button>}
               </label>
             ); })}
@@ -8805,8 +9040,8 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'services':   return <ServicesPage/>;
     case 'inventory':  return <InventoryPage/>;
     case 'ai':         return <AIAssistantPage navigate={navigate}/>;
-    case 'analytics':  return <AnalyticsPage navigate={navigate}/> ;
-    case 'reports':    return <ReportsPage/>;
+    case 'analytics':  return STAFF_MODE ? <Dashboard navigate={navigate}/> : <AnalyticsPage navigate={navigate}/> ;
+    case 'reports':    return STAFF_MODE ? <Dashboard navigate={navigate}/> : <ReportsPage/>;
     case 'xray':       return <XRayPage navigate={navigate}/>;
     case 'notes':      return <NotesPage/>;
     case 'staff':      return <StaffPage/>;
