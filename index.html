@@ -8017,25 +8017,19 @@ function AIAssistantPage({navigate}){
       </div>
 
       {/* Status bar */}
-      <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 14px',background:apiKey?'#f0fdf4':'#fef2f2',borderRadius:8,border:apiKey?'1px solid #86efac':'1px solid #fca5a5',flexShrink:0,flexWrap:'wrap'}}>
-        <div style={{width:8,height:8,borderRadius:'50%',background:apiKey?'#22c55e':'#ef4444',flexShrink:0}}/>
-        <span style={{fontSize:12,fontWeight:700,color:apiKey?'#166534':'#991b1b'}}>
-          {apiKey?'متصل':'غير متصل — أضف API Key من الإعدادات'}
-        </span>
-        {apiKey&&(
-          <select value={model} onChange={e=>{setModel(e.target.value); localStorage.setItem('mc_ai_model', e.target.value);}}
-            title={(AI_MODELS.find(m=>m.id===model)||{}).hint}
-            style={{fontSize:11.5,fontWeight:700,padding:'3px 8px',borderRadius:6,border:'1px solid #86efac',background:'#fff',color:'#166534',cursor:'pointer'}}>
-            {AI_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
-        )}
-        {apiKey&&(
-          <label title="استدلال سريري أعمق قبل الإجابة — أبطأ لكن أدق في الحالات المعقّدة"
-            style={{display:'flex',alignItems:'center',gap:5,fontSize:11.5,fontWeight:700,color:deepThink?'var(--primary)':'#166534',cursor:'pointer'}}>
-            <input type="checkbox" checked={deepThink} onChange={e=>setDeepThink(e.target.checked)} style={{cursor:'pointer'}}/>
-            🧠 تفكير عميق
-          </label>
-        )}
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 14px',background:'#f0fdf4',borderRadius:8,border:'1px solid #86efac',flexShrink:0,flexWrap:'wrap'}}>
+        <div style={{width:8,height:8,borderRadius:'50%',background:'#22c55e',flexShrink:0}}/>
+        <span style={{fontSize:12,fontWeight:700,color:'#166534'}}>متصل</span>
+        <select value={model} onChange={e=>{setModel(e.target.value); localStorage.setItem('mc_ai_model', e.target.value);}}
+          title={(AI_MODELS.find(m=>m.id===model)||{}).hint}
+          style={{fontSize:11.5,fontWeight:700,padding:'3px 8px',borderRadius:6,border:'1px solid #86efac',background:'#fff',color:'#166534',cursor:'pointer'}}>
+          {AI_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
+        </select>
+        <label title="استدلال سريري أعمق قبل الإجابة — أبطأ لكن أدق في الحالات المعقّدة"
+          style={{display:'flex',alignItems:'center',gap:5,fontSize:11.5,fontWeight:700,color:deepThink?'var(--primary)':'#166534',cursor:'pointer'}}>
+          <input type="checkbox" checked={deepThink} onChange={e=>setDeepThink(e.target.checked)} style={{cursor:'pointer'}}/>
+          🧠 تفكير عميق
+        </label>
         {selP&&<span style={{fontSize:11,padding:'2px 8px',background:'var(--primary)',color:'#fff',borderRadius:20,marginRight:'auto',fontWeight:700}}>سياق كامل: {selP.name}</span>}
       </div>
 
