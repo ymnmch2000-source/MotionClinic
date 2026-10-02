@@ -459,15 +459,31 @@ const _supaClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   db: { schema: 'public' },
 });
 
-// ── مفتاح Anthropic — يُحمَّل بأمان من Supabase (clinic_settings) بعد تسجيل الدخول ──
-// لا يُكتب المفتاح في الكود إطلاقاً (يمنع كشفه في المصدر العام وسرقته).
-window.ANTHROPIC_API_KEY = localStorage.getItem('mc_api_key') || '';
+// ── مفتاح Anthropic: لم يعد يُخزَّن في المتصفح إطلاقاً (مرحلة 1 — أمان) ──
+// الذكاء الاصطناعي يمرّ الآن عبر Supabase Edge Function (ai-proxy) التي تحمل
+// المفتاح في أسرار الخادم فقط. انظر supabase/functions/ai-proxy/index.ts.
+function aiProxyUrl(){ return SUPABASE_URL + '/functions/v1/ai-proxy'; }
+async function aiAuthHeader(){
+  try{
+    const { data } = await _supaClient.auth.getSession();
+    const tok = data && data.session && data.session.access_token;
+    return tok ? ('Bearer ' + tok) : ('Bearer ' + SUPABASE_KEY);
+  }catch(e){ return 'Bearer ' + SUPABASE_KEY; }
+}
 
 // ── وضع الموظفين (STAFF_MODE) — يُفعَّل في ملف staff.html المعزول ──
-// عند تفعيله: تُخفى المالية بالكامل (القائمة + الصفحة + تبويب المريض + بطاقات لوحة التحكم).
-// نفس بيانات المرضى (Supabase) لكن دون أي وصول مالي. ملاحظة: هذا إخفاء على مستوى الواجهة؛
-// للعزل الأمني الكامل يجب تقييد المالية عبر RLS بحسب الدور في Supabase.
+// عند تفعيله: تُخفى صفحات تشغيلية (تحليل/تقارير/حضور/مهام/سلة محذوفات) عن غير الإدارة.
+// هذا إخفاء واجهة فقط. الوصول الفعلي للمالية أصبح محكوماً بالدور الحقيقي من profiles
+// (انظر canSeeFinance أدناه) الذي تفرضه أيضاً سياسات RLS في Supabase — وليس مجرد واجهة.
 const STAFF_MODE = !!(window.__MC_STAFF);
+
+// ── الدور الحقيقي لكل مستخدم (يُضبط من RootApp بعد جلب صف profiles) ──
+// 'admin' | 'reception' | 'therapist' | null (لم يُحمَّل بعد)
+window.__MC_ROLE = null;
+function myRole(){ return window.__MC_ROLE || 'therapist'; } // أقل صلاحية افتراضياً حتى يُحمَّل الدور
+function isAdminUser(){ return myRole() === 'admin'; }
+// الفواتير: مدير أو استقبال. المصاريف: مدير فقط دوماً (مفروضة أيضاً بـ RLS).
+function canSeeFinance(){ const r = myRole(); return r === 'admin' || r === 'reception'; }
 
 // ── تحمّل اختلاف المخطط (Schema drift) ──
 // إذا لم يُشغَّل supabase_migration.sql بعد، فأي حقل جديد يُفشل رفع السجل كاملاً
@@ -765,23 +781,33 @@ const nextId = (prefix) => {
 // ─────────────────────────────────────────────────────────────────
 const today = () => new Date().toISOString().split('T')[0];
 
+// ── نماذج الذكاء الاصطناعي المتاحة ──────────────────────────────────
+const AI_MODELS = [
+  {id:'claude-opus-4-6',   label:'Opus 4.6 — الأقوى',       hint:'أفضل تحليل سريري وأعمق استدلال'},
+  {id:'claude-sonnet-4-6', label:'Sonnet 4.6 — متوازن',     hint:'سرعة ممتازة وجودة عالية (موصى به)'},
+  {id:'claude-haiku-4-5',  label:'Haiku 4.5 — الأسرع',      hint:'ردود فورية ومهام بسيطة'},
+];
+const AI_DEFAULT_MODEL = 'claude-sonnet-4-6';
+// النماذج القديمة تُرقّى تلقائياً إلى أحدث إصدار
+const AI_UPGRADE = {'claude-sonnet-4-5':'claude-sonnet-4-6','claude-opus-4-5':'claude-opus-4-6','claude-3-5-sonnet-20241022':'claude-sonnet-4-6'};
+function aiModel(){
+  const m = localStorage.getItem('mc_ai_model') || AI_DEFAULT_MODEL;
+  return AI_UPGRADE[m] || m;
+}
+
 // ── دالة موحّدة للذكاء الاصطناعي — يستخدمها كل الأقسام ──────────────
 async function callAI(prompt, opts={}){
-  const apiKey = window.ANTHROPIC_API_KEY || localStorage.getItem('mc_api_key') || '';
-  if(!apiKey){ throw new Error('NO_KEY'); }
   const body = {
-    model: opts.model || localStorage.getItem('mc_ai_model') || 'claude-sonnet-4-5',
+    model: opts.model || aiModel(),
     max_tokens: opts.max_tokens || 2500,
     messages: opts.messages || [{role:'user', content: prompt}],
   };
   if(opts.system) body.system = opts.system;
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+  const resp = await fetch(aiProxyUrl(), {
     method:'POST',
     headers:{
       'Content-Type':'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version':'2023-06-01',
-      'anthropic-dangerous-direct-browser-access':'true'
+      'Authorization': await aiAuthHeader(),
     },
     body: JSON.stringify(body)
   });
@@ -1339,11 +1365,16 @@ function ClinicProvider({ children }) {
       if (pullErrs.length) setSyncError('تعذّر جلب بعض الجداول: ' + pullErrs.join(' | '));
       else setSyncError('');
       // KV: settings & categories
+      // ⚠️ لا نسحب الإعدادات إذا كان رفعها لا يزال في الطابور — وإلّا داست النسخة
+      // السحابية القديمة على تعديل محلي لم يُرفع بعد (مثل نص رسالة التذكير).
       try {
-        const cloudSettings = await sb.selectKV('settings');
-        if (cloudSettings) setSettings(s => ({ ...s, ...cloudSettings }));
-        const cloudCats = await sb.selectKV('categories');
-        if (cloudCats) setCategories(cloudCats);
+        const kvPending = getPending().some(o => o.op === 'kv');
+        if (!kvPending) {
+          const cloudSettings = await sb.selectKV('settings');
+          if (cloudSettings) setSettings(s => ({ ...s, ...cloudSettings }));
+          const cloudCats = await sb.selectKV('categories');
+          if (cloudCats) setCategories(cloudCats);
+        }
       } catch(e) {}
 
       const now = new Date().toISOString();
@@ -1860,9 +1891,44 @@ function TA({label,value,onChange,placeholder='',rows=3}){
   return(<Field label={label}><textarea className="input" value={value||''} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={rows}/></Field>);
 }
 // أسماء الكادر — المصدر الوحيد: صفحة «فريق العمل». يحتفظ بالقيمة القديمة إن لم تعد ضمن الكادر.
+// توحيد شكل الاسم للمقارنة: إزالة الفراغات الزائدة + توحيد الألف/الهاء/الياء + حذف النقطة بعد "د"
+// حتى تُعتبر «د. يامن شحادة» و«د.يامن  شحاده» اسماً واحداً ولا تتكرر في القوائم.
+function normName(n){
+  const collapse = (x)=>x.split('\t').join(' ').split('\n').join(' ').split(' ').filter(Boolean).join(' ');
+  let s = collapse(String(n||''));
+  s = collapse(s.split('.').join('. '));
+  return s
+    .split('أ').join('ا').split('إ').join('ا').split('آ').join('ا')
+    .split('ة').join('ه').split('ى').join('ي')
+    .toLowerCase();
+}
 function staffNameOptions(staff, settings, current){
   const names = (staff||[]).filter(s=>s.status!=='متوقف').map(s=>s.name).filter(Boolean);
-  return [...new Set([...names, settings&&settings.therapistName, current].filter(Boolean))];
+  const seen = new Set(), out = [];
+  for(const n of [...names, settings&&settings.therapistName, current]){
+    if(!n) continue;
+    const k = normName(n);
+    if(seen.has(k)) continue;
+    seen.add(k); out.push(String(n).trim());
+  }
+  return out;
+}
+// يجمع سجلات الكادر المتشابهة الاسم → [{key, canonical, dups:[...]}]
+function findStaffDuplicates(staff){
+  const groups = {};
+  for(const s of (staff||[])){
+    const k = normName(s.name);
+    if(!k) continue;
+    (groups[k] = groups[k] || []).push(s);
+  }
+  return Object.entries(groups)
+    .filter(([,g])=>g.length>1)
+    .map(([key,g])=>{
+      // الأفضل = الأكثر اكتمالاً ثم الأقدم إنشاءً
+      const score = (s)=>['role','specialty','phone','email'].filter(k=>s[k]).length + (s.status==='نشط'?1:0);
+      const sorted = [...g].sort((a,b)=> score(b)-score(a) || String(a.id).localeCompare(String(b.id)));
+      return {key, canonical:sorted[0], dups:sorted.slice(1)};
+    });
 }
 function StaffSelect({label,value,onChange,placeholder='-- اختر من فريق العمل --'}){
   const {staff,settings} = useClinic();
@@ -1974,6 +2040,7 @@ function ReminderTemplateModal({value, vars, onSave, onClose}){
 function Dashboard({navigate}){
   const {patients,appointments,records,sessions,finance,expenses,inventory,inbody,settings,updateAppointment,updateSettings} = useClinic();
   const [editReminder,setEditReminder] = useState(false);
+  const [previewApt,setPreviewApt] = useState(null);
   const todayStr = today();
   const todayApts = appointments.filter(a=>a.date===todayStr);
   const totalRev = finance.filter(f=>f.status==='مدفوع').reduce((s,f)=>s+(f.paid||0),0);
@@ -2090,7 +2157,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
           <p className="page-subtitle">{new Date().toLocaleDateString('ar-EG',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</p>
         </div>
         <div style={{display:'flex',gap:8}}>
-          {!STAFF_MODE && <button className="btn btn-secondary" onClick={printOwnerReport}>📊 تقرير المالك</button>}
+          {canSeeFinance() && <button className="btn btn-secondary" onClick={printOwnerReport}>📊 تقرير المالك</button>}
           <button className="btn btn-accent" onClick={()=>navigate('patients','new')}>+ مريض جديد</button>
         </div>
       </div>
@@ -2102,14 +2169,14 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
           ['🆕 مرضى جدد اليوم', newToday, '#0891b2'],
           ['📅 مواعيد اليوم', todayApts.length, '#2563eb'],
           ['🔄 جلسات اليوم', todaySessions.length, '#7c3aed'],
-          ...(STAFF_MODE ? [] : [
+          ...(canSeeFinance() ? [
             ['💵 إيراد اليوم', fmt(todayRev)+' '+cur, '#059669'],
             ['⏳ مستحقات (ذمم)', fmt(outstanding)+' '+cur, outstanding>0?'#d97706':'#059669'],
-          ]),
+          ] : []),
           ['🔔 مرضى منقطعون', lapsed, lapsed>0?'#dc2626':'#059669'],
-          ...(STAFF_MODE ? [] : [
+          ...(canSeeFinance() ? [
             ['💰 إجمالي الإيرادات', fmt(totalRev)+' '+cur, '#059669'],
-          ]),
+          ] : []),
           ['⚠️ مخزون منخفض', lowStock.length, lowStock.length>0?'#dc2626':'#059669'],
         ].map(([l,v,c],i)=>(
           <div key={i} className="stat-card">
@@ -2196,7 +2263,10 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
                     <td>{a.reminded
                       ? <span style={{color:'#059669',fontWeight:800,fontSize:12}}>✅ تم التذكير</span>
                       : <span style={{color:'#d97706',fontWeight:800,fontSize:12}}>⏳ بانتظار التذكير</span>}</td>
-                    <td><button className="btn btn-sm" style={{background:'#059669',color:'#fff'}} onClick={()=>sendReminder(a)}>📱 إرسال</button></td>
+                    <td><div style={{display:'flex',gap:6}}>
+                      <button className="btn btn-sm btn-ghost" title="معاينة الرسالة التي ستُرسل" onClick={()=>setPreviewApt(a)}>👁</button>
+                      <button className="btn btn-sm" style={{background:'#059669',color:'#fff'}} onClick={()=>sendReminder(a)}>📱 إرسال</button>
+                    </div></td>
                   </tr>
                 ))}
               </tbody>
@@ -2214,6 +2284,28 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
           onSave={(t)=>{ updateSettings({reminderTemplate:t}); setEditReminder(false); }}
           onClose={()=>setEditReminder(false)}
         />
+      )}
+
+      {previewApt && (
+        <div className="modal-overlay" onClick={()=>setPreviewApt(null)}>
+          <div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>👁 الرسالة التي ستُرسل إلى {previewApt.patientName}</h2>
+              <button className="modal-close" onClick={()=>setPreviewApt(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div style={{whiteSpace:'pre-wrap',background:'#dcf8c6',border:'1px solid #bbf7d0',borderRadius:12,
+                           padding:'12px 14px',fontSize:14,lineHeight:1.9,color:'#111'}}>
+                {buildReminder(previewApt)}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={()=>{ setPreviewApt(null); setEditReminder(true); }}>✏️ تعديل النص</button>
+              <button className="btn btn-outline" onClick={()=>setPreviewApt(null)}>إغلاق</button>
+              <button className="btn btn-primary" onClick={()=>{ sendReminder(previewApt); setPreviewApt(null); }}>📱 إرسال الآن</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {unresolvedApts.length>0 && (
@@ -2575,7 +2667,7 @@ function PatientProfile({patientId, navigate}){
   const TABS = [
     ['info','📋 ملف المريض'],['records','🏥 السجلات الطبية'],['recommendations','📋 التوصيات'],
     ['sessions','🔄 متابعة الجلسات'],['appointments','📅 المواعيد'],
-    ...(STAFF_MODE ? [] : [['finance','💰 المالية']]),
+    ...(canSeeFinance() ? [['finance','💰 المالية']] : []),
     ['inbody','⚖️ InBody'],['notes','📝 الملاحظات'],['files','📎 الملفات والمرفقات'],
   ];
 
@@ -4095,21 +4187,17 @@ BMR بمعادلة Mifflin-St Jeor | TDEE | هدف السعرات | توزيع: 
 
   const generate = async () => {
     if(!selectedPatient && !form.diagnosis) { alert('اختر مريضاً أو أدخل التشخيص على الأقل'); return; }
-    const apiKey = window.ANTHROPIC_API_KEY || localStorage.getItem('mc_api_key') || '';
-    if(!apiKey){ alert('⚠️ لا يوجد مفتاح ذكاء اصطناعي.\nاذهب إلى الإعدادات ← 🤖 الذكاء الاصطناعي وأدخل المفتاح أولاً.'); return; }
     setGenerating(true);
     setResult('');
     try {
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      const resp = await fetch(aiProxyUrl(), {
         method:'POST',
         headers:{
           'Content-Type':'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version':'2023-06-01',
-          'anthropic-dangerous-direct-browser-access':'true'
+          'Authorization': await aiAuthHeader(),
         },
         body: JSON.stringify({
-          model: localStorage.getItem('mc_ai_model') || 'claude-sonnet-4-5',
+          model: aiModel(),
           max_tokens:3500,
           messages:[{role:'user',content:buildPrompt()}]
         })
@@ -6357,14 +6445,70 @@ function ReportsPage(){
 // STAFF PAGE
 // ══════════════════════════════════════════════════
 function StaffPage(){
-  const {staff, addStaff, updateStaff, deleteStaff} = useClinic();
+  const {staff, addStaff, updateStaff, deleteStaff, showToast,
+         patients, updatePatient, appointments, updateAppointment, sessions, updateSession,
+         records, updateRecord, inbody, updateInbody, tasks, updateTask,
+         attendance, updateAttendance} = useClinic();
   const [modal,setModal] = useState(null);
+  const [busy,setBusy] = useState(false);
+  const dups = findStaffDuplicates(staff);
+
+  // دمج مجموعة أسماء مكرّرة في اسم واحد معتمد:
+  // 1) إعادة تسمية كل الإشارات في باقي الجداول  2) نقل الحقول الناقصة  3) حذف السجلات الزائدة
+  const mergeGroup = async (g) => {
+    const keep = g.canonical, name = String(keep.name||'').trim();
+    const oldNames = g.dups.map(d=>String(d.name||'').trim()).filter(n=>n && n!==name);
+    if(!confirm(`دمج ${g.dups.length+1} سجلات باسم «${name}».\n\nسيتم تحويل كل المواعيد والجلسات والمهام والحضور المرتبطة بالأسماء:\n${oldNames.join('\n')||'(نفس الاسم)'}\n\nإلى «${name}» ثم حذف السجلات المكرّرة.\n\nمتابعة؟`)) return;
+    setBusy(true);
+    try{
+      const hit = (v)=> v && oldNames.some(o=>normName(o)===normName(v));
+      for(const p of patients)      if(hit(p.assignedTherapist)) await updatePatient(p.id,{...p, assignedTherapist:name});
+      for(const a of appointments)  if(hit(a.therapist))         await updateAppointment(a.id,{...a, therapist:name});
+      for(const s of sessions)      if(hit(s.therapistName))     await updateSession(s.id,{...s, therapistName:name});
+      for(const r of records)       if(hit(r.therapistName))     await updateRecord(r.id,{...r, therapistName:name});
+      for(const b of (inbody||[]))  if(hit(b.therapistName))     await updateInbody(b.id,{...b, therapistName:name});
+      for(const t of (tasks||[]))   if(hit(t.staffName))         await updateTask(t.id,{...t, staffName:name});
+      for(const t of (attendance||[])) if(hit(t.staffName))      await updateAttendance(t.id,{...t, staffName:name, staffId:keep.id});
+      // أكمل الحقول الفارغة في السجل المعتمد من السجلات المكرّرة قبل حذفها
+      const filled = {...keep};
+      for(const d of g.dups) for(const k of ['role','specialty','phone','email'])
+        if(!filled[k] && d[k]) filled[k] = d[k];
+      if(JSON.stringify(filled)!==JSON.stringify(keep)) await updateStaff(keep.id, filled);
+      for(const d of g.dups) await deleteStaff(d.id);
+      showToast(`✅ تم دمج «${name}» — حُذف ${g.dups.length} سجل مكرّر`);
+    }catch(e){ showToast('تعذّر الدمج: '+e.message,'error'); }
+    setBusy(false);
+  };
+
   return(
     <div className="page-content">
       <div className="page-header">
-        <div><h1 className="page-title">👨‍⚕️ فريق العمل</h1><p className="page-subtitle">{staff.length} موظف</p></div>
+        <div><h1 className="page-title">👨‍⚕️ فريق العمل</h1><p className="page-subtitle">{staff.length} موظف{dups.length?` · ⚠️ ${dups.length} اسم مكرّر`:''}</p></div>
         <button className="btn btn-accent" onClick={()=>setModal({})}>+ موظف جديد</button>
       </div>
+
+      {dups.length>0 && (
+        <div className="card" style={{marginBottom:16,borderTop:'3px solid var(--orange)'}}>
+          <div className="card-header"><h3 className="card-title">⚠️ أسماء مكرّرة في فريق العمل ({dups.length})</h3></div>
+          <div className="card-body">
+            <div style={{fontSize:12.5,color:'var(--text-mid)',fontWeight:600,marginBottom:12,lineHeight:1.8}}>
+              نفس الموظف مُسجَّل أكثر من مرة (غالباً أُضيف من جهازين). الدمج يحوّل كل المواعيد والجلسات والمهام إلى الاسم المعتمد ثم يحذف المكرّر — لا تضيع أي بيانات.
+            </div>
+            {dups.map(g=>(
+              <div key={g.key} style={{border:'1px solid var(--border)',borderRadius:10,padding:'12px 14px',marginBottom:10}}>
+                <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                  <strong style={{fontSize:14}}>{g.canonical.name}</strong>
+                  <span className="badge badge-green">يُبقى: {g.canonical.id}</span>
+                  {g.dups.map(d=><span key={d.id} className="badge badge-gray">يُحذف: {d.id} — «{d.name}»</span>)}
+                  <button className="btn btn-sm btn-accent" style={{marginRight:'auto'}} disabled={busy}
+                    onClick={()=>mergeGroup(g)}>🔗 دمج</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <table className="data-table">
           <thead><tr><th>الكود</th><th>الاسم</th><th>الدور</th><th>التخصص</th><th>الهاتف</th><th>البريد</th><th>الحالة</th><th>إجراءات</th></tr></thead>
@@ -6392,13 +6536,17 @@ function StaffPage(){
 }
 
 function StaffModal({staff, onClose}){
-  const {addStaff, updateStaff} = useClinic();
+  const {addStaff, updateStaff, staff:allStaff} = useClinic();
   const isEdit = !!staff;
   const [form,setForm] = useState(staff||{name:'',role:'معالج',specialty:'',phone:'',email:'',status:'نشط'});
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const clash = (allStaff||[]).find(s=>s.id!==(staff&&staff.id) && normName(s.name)===normName(form.name));
   const save=()=>{
-    if(!form.name){alert('الاسم مطلوب');return;}
-    if(isEdit) updateStaff(staff.id,form); else addStaff({...form,id:nextId('STAFF')});
+    const name = String(form.name||'').trim();
+    if(!name){alert('الاسم مطلوب');return;}
+    if(clash && !confirm(`يوجد موظف بنفس الاسم «${clash.name}» (${clash.id}).\nالحفظ سينشئ تكراراً — يُفضّل تعديل السجل الموجود.\n\nمتابعة رغم ذلك؟`)) return;
+    const data = {...form, name};
+    if(isEdit) updateStaff(staff.id,data); else addStaff({...data,id:nextId('STAFF')});
     onClose();
   };
   return(
@@ -6406,6 +6554,7 @@ function StaffModal({staff, onClose}){
       <div className="modal" onClick={e=>e.stopPropagation()}>
         <div className="modal-header"><h2>{isEdit?'✏️ تعديل موظف':'➕ إضافة موظف'}</h2><button className="modal-close" onClick={onClose}>✕</button></div>
         <div className="modal-body">
+          {clash && <div className="alert alert-warning" style={{marginBottom:10,fontSize:12.5}}>⚠️ يوجد موظف بنفس الاسم: <strong>{clash.name}</strong> ({clash.id}) — عدّل السجل الموجود بدل إنشاء نسخة جديدة.</div>}
           <div className="form-row"><TF label="الاسم *" value={form.name} onChange={v=>f('name',v)}/><SF label="الدور" value={form.role} onChange={v=>f('role',v)} options={['معالج','استقبال','محاسبة','مدير','إداري']}/></div>
           <div className="form-row"><TF label="التخصص" value={form.specialty} onChange={v=>f('specialty',v)}/><TF label="الهاتف" value={form.phone} onChange={v=>f('phone',v)}/></div>
           <div className="form-row"><TF label="البريد الإلكتروني" value={form.email} onChange={v=>f('email',v)}/><SF label="الحالة" value={form.status} onChange={v=>f('status',v)} options={['نشط','متوقف']}/></div>
@@ -6583,6 +6732,7 @@ function SettingsPage(){
          folderSupported, backupDir, chooseBackupFolder, saveBackupToFolder} = useClinic();
   const [tab,setTab] = useState('clinic');
   const [editRem,setEditRem] = useState(false);
+  const [aiM,setAiM] = useState(aiModel());
   const [importing,setImporting] = useState(false);
   const [auditFilter,setAuditFilter] = useState('');
   const [role,setRole] = useState(localStorage.getItem('mc_role')||'admin');
@@ -6617,8 +6767,12 @@ function SettingsPage(){
     reader.readAsText(file);
   };
   const [form,setForm] = useState({...settings});
-  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
-  const save=()=>updateSettings(form);
+  // النموذج يُنسخ مرة واحدة عند الفتح؛ لو تغيّرت الإعدادات من جهاز آخر أو من لوحة التحكم
+  // وجب تحديثه — وإلا داس «حفظ» على القيم الجديدة بنسخة قديمة (مثل نص رسالة التذكير).
+  const dirtyRef = useRef(false);
+  useEffect(()=>{ if(!dirtyRef.current) setForm({...settings}); }, [settings]);
+  const f=(k,v)=>{ dirtyRef.current = true; setForm(p=>({...p,[k]:v})); };
+  const save=()=>{ updateSettings(form); dirtyRef.current = false; };
   const fileRef = useRef(null);
 
   const THEMES=[
@@ -6712,7 +6866,8 @@ function SettingsPage(){
               value={form.reminderTemplate || DEF_SETTINGS.reminderTemplate}
               vars={{name:'أحمد محمد', date:today(), time:'10:30', service:'جلسة علاج طبيعي',
                      therapist:form.therapistName||'', clinic:form.clinicName||'العيادة', phone:form.phone||''}}
-              onSave={(t)=>{ f('reminderTemplate',t); setEditRem(false); }}
+              /* يُحفظ فوراً — لا ينتظر زر «حفظ» في أسفل الصفحة (سبب عدم تطبيق النص المعدَّل عند الإرسال) */
+              onSave={(t)=>{ f('reminderTemplate',t); updateSettings({reminderTemplate:t}); setEditRem(false); }}
               onClose={()=>setEditRem(false)}
             />
           )}
@@ -6773,45 +6928,27 @@ function SettingsPage(){
           <div className="card">
             <div className="card-header"><h3>🤖 مفتاح Anthropic API</h3></div>
             <div className="card-body">
-              <div className="alert alert-info" style={{marginBottom:16}}>
-                مطلوب لتشغيل التغذية العلاجية الذكية. احصل على مفتاحك من:
-                <a href="https://console.anthropic.com" target="_blank" style={{color:'var(--primary)',fontWeight:700,marginRight:6}}>console.anthropic.com</a>
-                ← API Keys ← Create Key
+              <div className="alert alert-info" style={{display:'flex',alignItems:'center',gap:8}}>
+                🔒 يُدار المفتاح الآن من الخادم (Supabase Edge Function) ولا يظهر أبداً في المتصفح. لا حاجة لإدخاله هنا.
               </div>
-              <div className="form-group">
-                <label className="form-label">API Key</label>
-                <input className="input" type="password" id="apiKeyInput"
-                  defaultValue={window.ANTHROPIC_API_KEY||localStorage.getItem('mc_api_key')||''}
-                  placeholder="sk-ant-api03-..." style={{fontFamily:'monospace'}}/>
-                <div style={{fontSize:11,color:'var(--text-light)',marginTop:4}}>يُحفظ في المتصفح محلياً فقط</div>
-              </div>
-              <div style={{display:'flex',gap:10,marginTop:10,flexWrap:'wrap'}}>
-                <button className="btn btn-primary" onClick={()=>{
-                  const k=document.getElementById('apiKeyInput').value.trim();
-                  if(!k.startsWith('sk-ant')){alert('المفتاح يجب أن يبدأ بـ sk-ant');return;}
-                  window.ANTHROPIC_API_KEY=k;localStorage.setItem('mc_api_key',k);
-                  alert('تم حفظ المفتاح بنجاح');
-                }}>💾 حفظ المفتاح</button>
-                <button className="btn btn-secondary" onClick={()=>{
-                  window.ANTHROPIC_API_KEY='';localStorage.removeItem('mc_api_key');
-                  document.getElementById('apiKeyInput').value='';alert('تم مسح المفتاح');
-                }}>🗑 مسح</button>
-                <button className="btn btn-ghost" onClick={async()=>{
-                  const k=document.getElementById('apiKeyInput').value.trim();
-                  if(!k){alert('أدخل المفتاح أولاً');return;}
-                  try{
-                    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
-                      headers:{'Content-Type':'application/json','x-api-key':k,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-                      body:JSON.stringify({model:'claude-haiku-4-5',max_tokens:10,messages:[{role:'user',content:'hi'}]})});
-                    alert(r.ok?'✅ المفتاح يعمل بشكل صحيح!':'❌ المفتاح غير صحيح');
-                  }catch(e){alert('تعذر الاتصال: '+e.message);}
-                }}>🔍 اختبار الاتصال</button>
-              </div>
-              <div style={{marginTop:14,display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)'}}>
-                <div style={{width:10,height:10,borderRadius:'50%',background:localStorage.getItem('mc_api_key')?'var(--green)':'var(--red)'}}/>
-                <span style={{fontSize:13,fontWeight:700,color:localStorage.getItem('mc_api_key')?'var(--green)':'var(--red)'}}>
-                  {localStorage.getItem('mc_api_key')?'مفتاح محفوظ ✓':'لا يوجد مفتاح — التغذية الذكية معطلة'}
-                </span>
+
+              <div style={{marginTop:18,paddingTop:16,borderTop:'1px solid var(--border)'}}>
+                <div style={{fontSize:14,fontWeight:800,marginBottom:10}}>🧠 نموذج الذكاء الاصطناعي</div>
+                <div style={{display:'grid',gap:8}}>
+                  {AI_MODELS.map(m=>(
+                    <label key={m.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',cursor:'pointer',
+                      border:'1px solid '+(aiM===m.id?'var(--primary)':'var(--border)'), borderRadius:10,
+                      background:aiM===m.id?'var(--primary-bg)':'transparent'}}>
+                      <input type="radio" name="aimodel" checked={aiM===m.id}
+                        onChange={()=>{ localStorage.setItem('mc_ai_model', m.id); setAiM(m.id); }}/>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:800,color:aiM===m.id?'var(--primary)':'var(--text-dark)'}}>{m.label}</div>
+                        <div style={{fontSize:11.5,color:'var(--text-light)'}}>{m.hint}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+                <div style={{fontSize:11.5,color:'var(--text-light)',marginTop:8}}>يُستخدم في MOTION AI وصفحة التغذية وكل التحليلات الذكية.</div>
               </div>
             </div>
           </div>
@@ -7503,13 +7640,37 @@ const MOTION_AI_SYSTEM = `أنت MOTION AI — المساعد الذكي الم�
 ACL بعد عملية: بروتوكول تدريجي صارم، لا تسرّع
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
+🔬 منهجية التفكير السريري (اتبعها دائماً)
+━━━━━━━━━━━━━━━━━━━━━━━━
+قبل أي توصية، مرّ ذهنياً على:
+1. الأعلام الحمراء (Red Flags) — هل هناك ما يستوجب التحويل الفوري؟
+2. التشخيص التفريقي — اذكر 2-3 احتمالات مرتّبة بالأرجحية مع سبب كل منها
+3. التصنيف الوظيفي — Irritability (عالية/متوسطة/منخفضة) + مرحلة الشفاء (حادة/تحت حادة/مزمنة)
+4. الاختبارات السريرية المقترحة للتأكيد (مع الحساسية/النوعية إن عُرفت)
+5. الخطة بمراحل زمنية واضحة + معايير التقدّم من مرحلة لأخرى
+6. مؤشرات النجاح القابلة للقياس (VAS, ROM, قوة MMT, مقاييس وظيفية مثل ODI/DASH/LEFS)
+7. موانع الاستعمال والاحتياطات الخاصة بهذا المريض تحديداً
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+📐 شكل الإجابة
+━━━━━━━━━━━━━━━━━━━━━━━━
+- ابدأ بخلاصة في سطرين (TL;DR) ثم التفاصيل
+- استخدم جداول Markdown للبروتوكولات والتمارين (تمرين | مجموعات×تكرار | التكرار الأسبوعي | ملاحظة)
+- استخدم عناوين ## وقوائم مرقّمة
+- اختم بـ «⚠️ الخطوة التالية» و«🔁 متى تُراجع الخطة»
+- إذا كان المريض محدّداً في السياق، اربط كلامك ببياناته الفعلية (منحنى الألم، InBody، عدد الجلسات) ولا تطلب معلومات موجودة أمامك
+
+━━━━━━━━━━━━━━━━━━━━━━━━
 ⚙️ قواعد عامة
 ━━━━━━━━━━━━━━━━━━━━━━━━
 1. دائماً اذكر "هذا اقتراح — القرار النهائي للمعالج"
 2. في الشك، كن محافظاً وأحل للطبيب المختص
 3. أجب بالعربية دائماً
 4. كن إيجابياً ومحفزاً مع المرضى
-5. وثّق وكن دقيقاً في الأرقام والجرعات`;
+5. وثّق وكن دقيقاً في الأرقام والجرعات
+6. لا تخترع بيانات — إن نقص شيء جوهري، اسأل سؤالاً واحداً محدّداً فقط ثم أعطِ أفضل خطة ممكنة بالمتاح
+7. استند للأدلة: اذكر مستوى الدليل باختصار (دليل قوي / ممارسة شائعة / رأي خبير) عند التوصيات العلاجية
+8. راعِ الواقع السوري: توفر الأجهزة، القدرة المالية، وبدائل منزلية رخيصة لكل تمرين يحتاج جهازاً`;
 
 const AI_QUICK_ACTIONS = [
   {id:'protocol',    icon:'🩺', label:'بروتوكول علاج',    prompt:'اعطني بروتوكول علاج فيزيائي كامل لحالة: '},
@@ -7525,25 +7686,38 @@ const AI_QUICK_ACTIONS = [
   {id:'referral',   icon:'🔄', label:'تحويل تخصص',       prompt:'هل أحوّل هذا المريض وإلى أي تخصص: '},
   {id:'analyze',    icon:'📈', label:'تحليل أداء العيادة', prompt:'حلّل أداء عيادتي بناءً على البيانات الحالية (المرضى، الجلسات، الإيرادات، المصروفات، المبالغ المستحقة، المخزون، أكثر التشخيصات) وأعطني أهم 5 ملاحظات وتوصيات عملية لتحسين الأداء.'},
   {id:'advice',     icon:'💡', label:'سؤال طبي',          prompt:''},
+  {id:'ddx',        icon:'🔬', label:'تشخيص تفريقي',      prompt:'اعمل تشخيصاً تفريقياً منظّماً (3 احتمالات مرتّبة بالأرجحية + الاختبارات السريرية المميِّزة لكل منها + الأعلام الحمراء) للحالة: '},
+  {id:'progress',   icon:'📈', label:'تقييم تقدّم المريض', prompt:'بناءً على بيانات المريض المحدد في السياق (منحنى الألم، عدد الجلسات، نتائج InBody)، قيّم تقدّمه: هل التحسن ضمن المتوقع؟ وما التعديل المطلوب على الخطة؟ وكم جلسة إضافية تتوقع؟'},
+  {id:'redflag',    icon:'🚩', label:'فحص الأعلام الحمراء', prompt:'راجع بيانات المريض المحدد في السياق وحدد أي أعلام حمراء (Red Flags) أو موانع استعمال أو تداخلات دوائية تستوجب الانتباه قبل الجلسة القادمة.'},
+  {id:'discharge',  icon:'🎓', label:'خطة إنهاء العلاج',   prompt:'صمم خطة إنهاء علاج (Discharge Plan) للمريض المحدد: معايير الخروج، برنامج الصيانة المنزلي، علامات الانتكاس، وموعد المتابعة.'},
+  {id:'retention',  icon:'🔁', label:'استعادة المنقطعين',  prompt:'بناءً على بيانات العيادة، اقترح خطة عملية لاستعادة المرضى المنقطعين وتقليل نسبة التسرب، مع نماذج رسائل واتساب جاهزة.'},
 ];
 
+const AI_CHAT_KEY = 'mc_ai_chat_v1';
+
 function AIAssistantPage({navigate}){
-  const {patients, settings, records, sessions, finance, appointments, expenses, inventory} = useClinic();
-  const [messages, setMessages] = useState([]);
+  const {patients, settings, records, sessions, finance, appointments, expenses, inventory, inbody, hepLib, staff} = useClinic();
+  // المحادثة تبقى محفوظة بين الجلسات — لا تضيع عند تحديث الصفحة
+  const [messages, setMessages] = useState(()=>{ try{ return JSON.parse(localStorage.getItem(AI_CHAT_KEY)||'[]'); }catch{ return []; } });
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('chat');
   const [contextPatient, setContextPatient] = useState('');
   const [showContext, setShowContext] = useState(false);
   const [copyIdx, setCopyIdx] = useState(null);
+  const [model, setModel] = useState(aiModel());
+  const [deepThink, setDeepThink] = useState(false);
   const messagesEndRef = React.useRef(null);
   const inputRef = React.useRef(null);
+  const abortRef = React.useRef(null);
 
   React.useEffect(()=>{
     messagesEndRef.current?.scrollIntoView({behavior:'smooth'});
   }, [messages]);
 
-  const apiKey = window.ANTHROPIC_API_KEY || localStorage.getItem('mc_api_key') || '';
+  React.useEffect(()=>{
+    try{ localStorage.setItem(AI_CHAT_KEY, JSON.stringify(messages.slice(-60))); }catch(e){}
+  }, [messages]);
 
   const getClinicContext = () => {
     const selP = patients.find(p=>p.id===contextPatient);
@@ -7570,61 +7744,146 @@ function AIAssistantPage({navigate}){
     const topDiag = Object.entries(diagCount).sort((a,b)=>b[1]-a[1]).slice(0,5);
     if(topDiag.length) ctx += `أكثر التشخيصات: ${topDiag.map(([d,n])=>`${d} (${n})`).join('، ')}\n`;
     if(selP){
-      const patRecs = records.filter(r=>r.patientId===selP.id);
-      const patSes = sessions.filter(s=>s.patientId===selP.id);
-      ctx += `\n👤 المريض المحدد: ${selP.name}\n`;
-      ctx += `العمر: ${selP.age||'—'} | الجنس: ${selP.gender||'—'}\n`;
-      if(selP.allergy && selP.allergy !== 'لا يوجد') ctx += `الحساسية: ${selP.allergy}\n`;
-      if(patRecs[0]) ctx += `التشخيص الأخير: ${patRecs[0].diagnosis||patRecs[0].complaint||'—'}\n`;
-      ctx += `عدد الجلسات: ${patSes.length}\n`;
+      const byDate = (a,b)=>String(b.date||'').localeCompare(String(a.date||''));
+      const patRecs = records.filter(r=>r.patientId===selP.id).sort(byDate);
+      const patSes  = sessions.filter(s=>s.patientId===selP.id).sort(byDate);
+      const patIB   = (inbody||[]).filter(b=>b.patientId===selP.id).sort(byDate);
+      const patFin  = finance.filter(f=>f.patientId===selP.id);
+      const patApt  = (appointments||[]).filter(a=>String(a.patientId)===String(selP.id) && a.date>=todayISO).sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+
+      ctx += `\n━━━━━━━━━━━━━━━━━━━━━━━━\n👤 الملف الكامل للمريض المحدد\n━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      ctx += `الاسم: ${selP.name} (${selP.id})\n`;
+      ctx += `العمر: ${selP.age||'—'} | الجنس: ${selP.gender||'—'} | الوزن: ${selP.weight||'—'} | الطول: ${selP.height||'—'}\n`;
+      ctx += `الحالة: ${selP.status||'—'} | المعالج المسؤول: ${selP.assignedTherapist||'—'}\n`;
+      if(selP.occupation) ctx += `المهنة: ${selP.occupation}\n`;
+      if(selP.allergy && selP.allergy!=='لا يوجد') ctx += `⚠️ الحساسية: ${selP.allergy}\n`;
+      const chronic = Array.isArray(selP.chronicConditions)? selP.chronicConditions.join('، ') : (selP.chronicConditions||'');
+      if(chronic) ctx += `⚠️ أمراض مزمنة: ${chronic}\n`;
+      if(selP.medications) ctx += `⚠️ الأدوية الحالية: ${selP.medications}\n`;
+      if(selP.notes) ctx += `ملاحظات الملف: ${selP.notes}\n`;
+
+      if(patRecs.length){
+        ctx += `\n📋 السجلات السريرية (${patRecs.length}) — الأحدث أولاً:\n`;
+        patRecs.slice(0,4).forEach(r=>{
+          ctx += `• ${r.date||'—'} | التشخيص: ${r.diagnosis||'—'} | الشكوى: ${r.complaint||'—'}`;
+          if(r.painLevel!=null && r.painLevel!=='') ctx += ` | الألم: ${r.painLevel}/10`;
+          if(r.rom) ctx += ` | ROM: ${r.rom}`;
+          if(r.plan) ctx += `\n  الخطة: ${String(r.plan).slice(0,200)}`;
+          ctx += `\n`;
+        });
+      }
+      if(patSes.length){
+        const pains = patSes.filter(s=>s.painLevel!=null && s.painLevel!=='').map(s=>`${s.date}:${s.painLevel}`);
+        ctx += `\n🏃 الجلسات: ${patSes.length} | الأولى ${patSes[patSes.length-1].date} | الأخيرة ${patSes[0].date}\n`;
+        if(pains.length) ctx += `منحنى الألم (تاريخ:درجة): ${pains.slice(0,12).reverse().join(' → ')}\n`;
+        const lastNotes = patSes.slice(0,3).filter(s=>s.notes).map(s=>`${s.date}: ${String(s.notes).slice(0,140)}`);
+        if(lastNotes.length) ctx += `آخر ملاحظات الجلسات:\n${lastNotes.map(x=>'  - '+x).join('\n')}\n`;
+      }
+      if(patIB.length){
+        const b = patIB[0];
+        ctx += `\n⚖️ آخر InBody (${b.date||'—'}): وزن ${b.weight||'—'} | دهون% ${b.bodyFat||'—'} | عضلات ${b.muscleMass||'—'} | دهون حشوية ${b.visceralFat||'—'} | BMI ${b.bmi||'—'}\n`;
+        if(patIB[1]) ctx += `مقارنة بـ ${patIB[1].date}: وزن ${patIB[1].weight||'—'} | دهون% ${patIB[1].bodyFat||'—'}\n`;
+      }
+      if(patApt.length) ctx += `\n📅 المواعيد القادمة: ${patApt.slice(0,5).map(a=>`${a.date} ${a.time||''}`).join('، ')}\n`;
+      const rem = patFin.reduce((s,f)=>s+(Number(f.remaining)||0),0);
+      if(rem>0) ctx += `💰 مستحقات غير مسددة: ${rem.toLocaleString()} ${settings.currency||'ل.س'}\n`;
     }
     return ctx;
   };
 
   const sendMessage = async (userMsg) => {
     if(!userMsg.trim()) return;
-    if(!apiKey){
-      setMessages(p=>[...p,
-        {role:'user',content:userMsg},
-        {role:'assistant',content:'⚠️ لا يوجد API Key. اذهب للإعدادات ← 🤖 الذكاء الاصطناعي وأدخل مفتاحك.',error:true}
-      ]);
-      return;
-    }
 
     const userMessage = {role:'user', content:userMsg, time: new Date().toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})};
     setMessages(p=>[...p, userMessage]);
     setInput('');
     setLoading(true);
 
-    const history = messages.slice(-10).map(m=>({role:m.role,content:m.content}));
+    const history = messages.filter(m=>!m.error).slice(-20).map(m=>({role:m.role,content:m.content}));
     const systemWithContext = MOTION_AI_SYSTEM + getClinicContext();
+    const now = () => new Date().toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'});
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    // فقاعة فارغة تمتلئ أثناء البث (streaming) — الرد يظهر كلمة بكلمة بدل الانتظار
+    setMessages(p=>[...p,{role:'assistant',content:'',time:now(),streaming:true}]);
+    const push = (chunk) => setMessages(p=>{
+      const c=[...p]; const last=c[c.length-1];
+      if(last && last.role==='assistant') c[c.length-1]={...last, content:last.content+chunk};
+      return c;
+    });
+    const finish = (patch) => setMessages(p=>{
+      const c=[...p]; const last=c[c.length-1];
+      if(last && last.role==='assistant') c[c.length-1]={...last, streaming:false, ...patch};
+      return c;
+    });
 
     try{
-      const resp = await fetch('https://api.anthropic.com/v1/messages',{
+      const body = {
+        model,
+        max_tokens: deepThink ? 8000 : 4000,
+        system: systemWithContext,
+        messages: [...history, {role:'user', content: userMsg}],
+        stream: true,
+      };
+      // التفكير الممتد: استدلال سريري أعمق قبل الإجابة (Opus/Sonnet فقط)
+      if(deepThink && !model.includes('haiku')) body.thinking = {type:'enabled', budget_tokens:3000};
+
+      const resp = await fetch(aiProxyUrl(),{
         method:'POST',
+        signal: ctrl.signal,
         headers:{
           'Content-Type':'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version':'2023-06-01',
-          'anthropic-dangerous-direct-browser-access':'true'
+          'Authorization': await aiAuthHeader(),
         },
-        body: JSON.stringify({
-          model: localStorage.getItem('mc_ai_model') || 'claude-sonnet-4-5',
-          max_tokens: 2000,
-          system: systemWithContext,
-          messages: [...history, {role:'user', content: userMsg}]
-        })
+        body: JSON.stringify(body)
       });
-      const data = await resp.json();
-      if(data.error) throw new Error(data.error.message);
-      const text = data.content?.map(b=>b.text||'').join('') || 'لم تصل استجابة.';
-      setMessages(p=>[...p,{role:'assistant',content:text,time:new Date().toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})}]);
+
+      if(!resp.ok || !resp.body){
+        const err = await resp.json().catch(()=>({}));
+        throw new Error((err.error && err.error.message) || ('HTTP '+resp.status));
+      }
+
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for(;;){
+        const {done, value} = await reader.read();
+        if(done) break;
+        buf += dec.decode(value, {stream:true});
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for(const line of lines){
+          if(!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if(!payload || payload==='[DONE]') continue;
+          let ev; try{ ev = JSON.parse(payload); }catch(e){ continue; }
+          if(ev.type==='content_block_delta' && ev.delta && ev.delta.type==='text_delta') push(ev.delta.text||'');
+          else if(ev.type==='error') throw new Error((ev.error&&ev.error.message)||'stream error');
+        }
+      }
+      finish({});
+      setMessages(p=>{
+        const c=[...p]; const last=c[c.length-1];
+        if(last && last.role==='assistant' && !last.content) c[c.length-1]={...last, content:'لم تصل استجابة.', error:true};
+        return c;
+      });
     }catch(e){
-      setMessages(p=>[...p,{role:'assistant',content:'❌ خطأ: '+e.message,error:true}]);
+      if(e.name==='AbortError'){
+        // نحتفظ بالجزء الذي وصل قبل الإيقاف
+        setMessages(p=>{
+          const c=[...p]; const last=c[c.length-1];
+          if(last && last.role==='assistant') c[c.length-1]={...last, streaming:false, content:(last.content||'')+'\n\n⏹ تم إيقاف الرد.'};
+          return c;
+        });
+      } else finish({content:'❌ خطأ: '+e.message, error:true});
     }
+    abortRef.current = null;
     setLoading(false);
     setTimeout(()=>inputRef.current?.focus(), 100);
   };
+
+  const stopGenerating = () => { if(abortRef.current) abortRef.current.abort(); };
 
   const handleQuickAction = (action) => {
     if(action.prompt){
@@ -7642,7 +7901,16 @@ function AIAssistantPage({navigate}){
   };
 
   const clearChat = () => {
-    if(confirm('مسح المحادثة كاملاً؟')) setMessages([]);
+    if(confirm('مسح المحادثة كاملاً؟')){ setMessages([]); try{ localStorage.removeItem(AI_CHAT_KEY); }catch(e){} }
+  };
+
+  const exportChat = () => {
+    const txt = messages.map(m=>(m.role==='user'?'🧑 أنت':'🤖 MOTION AI')+(m.time?' ['+m.time+']':'')+'\n'+m.content).join('\n\n──────────\n\n');
+    const blob = new Blob(['\ufeff'+txt], {type:'text/plain;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'MotionAI-'+today()+'.txt';
+    a.click();
   };
 
   const selP = patients.find(p=>p.id===contextPatient);
@@ -7742,18 +8010,33 @@ function AIAssistantPage({navigate}){
               </div>
             )}
           </div>
+          {messages.length>0&&<button className="btn btn-ghost btn-sm" onClick={exportChat} title="تصدير المحادثة">⬇️</button>}
           {messages.length>0&&<button className="btn btn-ghost btn-sm" onClick={clearChat} title="مسح المحادثة">🗑</button>}
           <button className="btn btn-ghost btn-sm" onClick={()=>navigate('settings')} title="إعدادات AI">⚙️</button>
         </div>
       </div>
 
       {/* Status bar */}
-      <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',background:apiKey?'#f0fdf4':'#fef2f2',borderRadius:8,border:apiKey?'1px solid #86efac':'1px solid #fca5a5',flexShrink:0}}>
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 14px',background:apiKey?'#f0fdf4':'#fef2f2',borderRadius:8,border:apiKey?'1px solid #86efac':'1px solid #fca5a5',flexShrink:0,flexWrap:'wrap'}}>
         <div style={{width:8,height:8,borderRadius:'50%',background:apiKey?'#22c55e':'#ef4444',flexShrink:0}}/>
         <span style={{fontSize:12,fontWeight:700,color:apiKey?'#166534':'#991b1b'}}>
-          {apiKey?'متصل — '+( localStorage.getItem('mc_ai_model')||'claude-sonnet-4-5').replace('claude-','').replace('-20250514',''):'غير متصل — أضف API Key من الإعدادات'}
+          {apiKey?'متصل':'غير متصل — أضف API Key من الإعدادات'}
         </span>
-        {selP&&<span style={{fontSize:11,padding:'2px 8px',background:'var(--primary)',color:'#fff',borderRadius:20,marginRight:'auto',fontWeight:700}}>سياق: {selP.name}</span>}
+        {apiKey&&(
+          <select value={model} onChange={e=>{setModel(e.target.value); localStorage.setItem('mc_ai_model', e.target.value);}}
+            title={(AI_MODELS.find(m=>m.id===model)||{}).hint}
+            style={{fontSize:11.5,fontWeight:700,padding:'3px 8px',borderRadius:6,border:'1px solid #86efac',background:'#fff',color:'#166534',cursor:'pointer'}}>
+            {AI_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        )}
+        {apiKey&&(
+          <label title="استدلال سريري أعمق قبل الإجابة — أبطأ لكن أدق في الحالات المعقّدة"
+            style={{display:'flex',alignItems:'center',gap:5,fontSize:11.5,fontWeight:700,color:deepThink?'var(--primary)':'#166534',cursor:'pointer'}}>
+            <input type="checkbox" checked={deepThink} onChange={e=>setDeepThink(e.target.checked)} style={{cursor:'pointer'}}/>
+            🧠 تفكير عميق
+          </label>
+        )}
+        {selP&&<span style={{fontSize:11,padding:'2px 8px',background:'var(--primary)',color:'#fff',borderRadius:20,marginRight:'auto',fontWeight:700}}>سياق كامل: {selP.name}</span>}
       </div>
 
       {/* Tabs */}
@@ -7827,6 +8110,8 @@ function AIAssistantPage({navigate}){
             )}
 
             {messages.map((msg,idx)=>(
+              // الفقاعة الفارغة أثناء انتظار أول حرف تُخفى — مؤشر «يفكر» يظهر بدلاً منها
+              msg.role==='assistant' && msg.streaming && !msg.content ? null :
               <div key={idx} style={{display:'flex',gap:10,flexDirection:msg.role==='user'?'row-reverse':'row',alignItems:'flex-start'}}>
                 {/* Avatar */}
                 <div style={{
@@ -7853,9 +8138,10 @@ function AIAssistantPage({navigate}){
                   ):(
                     <div style={{fontSize:13,lineHeight:1.8}}>{formatMsg(msg.content)}</div>
                   )}
+                  {msg.streaming && <span style={{display:'inline-block',width:7,height:14,background:'var(--primary)',verticalAlign:'-2px',animation:'pulse 1s infinite',borderRadius:2}}/>}
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8,gap:8}}>
                     {msg.time&&<span style={{fontSize:10,opacity:0.5}}>{msg.time}</span>}
-                    {msg.role==='assistant'&&!msg.error&&(
+                    {msg.role==='assistant'&&!msg.error&&!msg.streaming&&(
                       <div style={{display:'flex',gap:4,marginRight:'auto'}}>
                         <button onClick={()=>copyMsg(idx,msg.content)}
                           style={{padding:'3px 8px',fontSize:10,border:'1px solid var(--border)',borderRadius:5,background:'transparent',cursor:'pointer',color:'var(--text-light)'}}>
@@ -7876,14 +8162,14 @@ function AIAssistantPage({navigate}){
               </div>
             ))}
 
-            {loading&&(
+            {loading && !(messages[messages.length-1]||{}).content && (
               <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
                 <div style={{width:34,height:34,borderRadius:10,background:'linear-gradient(135deg,var(--primary),var(--teal))',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,color:'#fff',flexShrink:0}}>🤖</div>
                 <div style={{background:'var(--card)',border:'1px solid var(--border)',borderRadius:'4px 14px 14px 14px',padding:'14px 18px',display:'flex',gap:6,alignItems:'center'}}>
                   {[0,1,2].map(i=>(
                     <div key={i} style={{width:8,height:8,borderRadius:'50%',background:'var(--primary)',animation:`pulse 1.2s infinite ${i*0.2}s`}}/>
                   ))}
-                  <span style={{fontSize:12,color:'var(--text-light)',marginRight:8}}>MOTION AI يفكر...</span>
+                  <span style={{fontSize:12,color:'var(--text-light)',marginRight:8}}>{deepThink?'MOTION AI يحلّل بعمق...':'MOTION AI يفكر...'}</span>
                 </div>
               </div>
             )}
@@ -7904,14 +8190,13 @@ function AIAssistantPage({navigate}){
               placeholder="اكتب سؤالك... (Enter للإرسال، Shift+Enter لسطر جديد)"
               disabled={loading}
             />
-            <button
-              className="btn btn-accent"
-              style={{padding:'10px 18px',flexShrink:0,alignSelf:'flex-end'}}
-              onClick={()=>sendMessage(input)}
-              disabled={loading||!input.trim()}
-            >
-              {loading?'⏳':'إرسال ↑'}
-            </button>
+            {loading ? (
+              <button className="btn btn-outline" style={{padding:'10px 18px',flexShrink:0,alignSelf:'flex-end',borderColor:'var(--red)',color:'var(--red)'}}
+                onClick={stopGenerating}>⏹ إيقاف</button>
+            ) : (
+              <button className="btn btn-accent" style={{padding:'10px 18px',flexShrink:0,alignSelf:'flex-end'}}
+                onClick={()=>sendMessage(input)} disabled={!input.trim()}>إرسال ↑</button>
+            )}
           </div>
         </>
       )}
@@ -8370,7 +8655,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
     ]},
     { section:'العمليات', items:[
       {id:'calendar',  icon:'📅', label:'التقويم', badge: todayApts.length||null},
-      ...(STAFF_MODE ? [] : [{id:'finance',   icon:'💰', label:'المالية'}]),
+      ...(canSeeFinance() ? [{id:'finance',   icon:'💰', label:'المالية'}] : []),
       {id:'hep',       icon:'🏋️', label:'مكتبة التمارين'},
       {id:'services',  icon:'🛠️', label:'الخدمات والأسعار'},
       {id:'inventory', icon:'📦', label:'المخزون', badge: lowStock.length||null},
@@ -8390,6 +8675,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       {id:'staff',      icon:'👨‍⚕️', label:'فريق العمل'},
       {id:'audit',      icon:'🔒',  label:'سجل التعديلات'},
       ...(STAFF_MODE ? [] : [{id:'trash', icon:'🗑️', label:'سلة المحذوفات'}]),
+      ...(isAdminUser() ? [{id:'users', icon:'🔐', label:'إدارة المستخدمين'}] : []),
     ]},
     { section:'النظام', items:[
       {id:'categories', icon:'🗂️', label:'الفئات والقوائم'},
@@ -8404,7 +8690,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
     inventory:'المخزون', analytics:'التحليل التنبئي', reports:'التقارير',
     xray:'مقارنة الأشعة', staff:'فريق العمل', audit:'سجل التعديلات', trash:'سلة المحذوفات',
     opsreport:'التقارير التشغيلية', attendance:'الحضور والانصراف', tasks:'مهام الكادر',
-    categories:'الفئات', settings:'الإعدادات',
+    categories:'الفئات', settings:'الإعدادات', users:'إدارة المستخدمين',
   };
 
   const logo = settings.logoImage
@@ -9060,6 +9346,94 @@ function RecycleBinPage(){
 }
 
 // ══════════════════════════════════════════════════
+// إدارة المستخدمين — مرحلة 1 (الأمان): دور كل حساب + تفعيله/تعطيله
+// admin فقط (مفروض أيضاً بسياسة RLS على جدول profiles)
+// ══════════════════════════════════════════════════
+const ROLE_LABELS = { admin:'مدير', reception:'استقبال', therapist:'معالج' };
+function UserManagementPage(){
+  const {staff, showToast} = useClinic();
+  const [rows,setRows] = useState([]);
+  const [busy,setBusy] = useState(false);
+  const [err,setErr]   = useState('');
+
+  const load = async () => {
+    setBusy(true); setErr('');
+    try{
+      const { data, error } = await _supaClient.from('profiles').select('*').order('created_at',{ascending:true});
+      if(error) throw error;
+      setRows(data||[]);
+    }catch(e){ setErr('تعذّر جلب الحسابات: '+((e&&e.message)||'')); }
+    setBusy(false);
+  };
+  useEffect(()=>{ load(); }, []);
+
+  const patch = async (id, fields) => {
+    setRows(p=>p.map(r=>r.id===id?{...r,...fields}:r)); // تحديث فوري بالواجهة
+    try{
+      const { error } = await _supaClient.from('profiles').update(fields).eq('id', id);
+      if(error) throw error;
+      showToast('✅ تم الحفظ');
+    }catch(e){ showToast('تعذّر الحفظ: '+((e&&e.message)||''),'error'); load(); }
+  };
+
+  const isMe = (id) => window.__MC_USER && window.__MC_USER.id === id;
+
+  return(
+    <div>
+      <div className="page-header">
+        <div><h1>🔐 إدارة المستخدمين</h1><p>دور كل حساب وصلاحياته — يُنشأ الحساب نفسه من Supabase Dashboard</p></div>
+        <button className="btn btn-outline" onClick={load} disabled={busy}>{busy?'⏳ جاري...':'🔄 تحديث'}</button>
+      </div>
+
+      <div className="alert alert-info" style={{marginBottom:14}}>
+        💡 لإضافة موظف جديد: Supabase ← Authentication ← Users ← Add user (إيميل + كلمة مرور) ثم ارجع هنا واضبط دوره وفعّله.
+        <br/>⚠️ <strong>المصاريف والرواتب</strong> لا يراها إلا <strong>المدير</strong> دائماً (مفروض من قاعدة البيانات نفسها، وليس فقط من الواجهة).
+      </div>
+      {err && <div className="alert alert-error" style={{marginBottom:14}}>{err}</div>}
+
+      <div className="card">
+        <table className="data-table">
+          <thead><tr><th>البريد الإلكتروني</th><th>الدور</th><th>مرتبط بموظف</th><th>مُفعَّل</th><th>تاريخ الإنشاء</th></tr></thead>
+          <tbody>
+            {rows.map(r=>(
+              <tr key={r.id}>
+                <td style={{fontWeight:700}}>{r.email || r.id}{isMe(r.id) && <span className="badge badge-blue" style={{marginRight:8}}>أنت</span>}</td>
+                <td>
+                  <select className="input" value={r.role||'therapist'} disabled={isMe(r.id)}
+                    onChange={e=>patch(r.id,{role:e.target.value})} style={{minWidth:120}}>
+                    <option value="admin">مدير</option>
+                    <option value="reception">استقبال</option>
+                    <option value="therapist">معالج</option>
+                  </select>
+                </td>
+                <td>
+                  <select className="input" value={r.staff_id||''} onChange={e=>patch(r.id,{staff_id:e.target.value||null})} style={{minWidth:160}}>
+                    <option value="">— بدون ربط —</option>
+                    {(staff||[]).map(s=>(<option key={s.id} value={s.id}>{s.name}</option>))}
+                  </select>
+                </td>
+                <td>
+                  <label style={{display:'flex',alignItems:'center',gap:6,cursor:isMe(r.id)?'not-allowed':'pointer'}}>
+                    <input type="checkbox" checked={!!r.active} disabled={isMe(r.id)}
+                      onChange={e=>{
+                        if(!e.target.checked && !confirm('تعطيل هذا الحساب سيمنعه فوراً من الدخول لأي بيانات. متابعة؟')) return;
+                        patch(r.id,{active:e.target.checked});
+                      }}/>
+                    <span className={'badge badge-'+(r.active?'green':'red')}>{r.active?'نشط':'معطَّل'}</span>
+                  </label>
+                </td>
+                <td style={{fontSize:12,color:'var(--text-light)'}}>{r.created_at?new Date(r.created_at).toLocaleDateString('ar-EG'):'—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {rows.length===0 && !busy && <div className="empty-state" style={{padding:30}}><div className="icon">👤</div><h3>لا حسابات بعد</h3></div>}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
 // PAGE ROUTER
 // ══════════════════════════════════════════════════
 function PageRouter({currentPage, patientId, navigate}){
@@ -9069,7 +9443,7 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'patient':    return <PatientProfile patientId={patientId} navigate={navigate}/>;
     case 'nutrition':   return <NutritionPage navigate={navigate}/>;
     case 'calendar':   return <CalendarPage/>;
-    case 'finance':    return STAFF_MODE ? <Dashboard navigate={navigate}/> : <FinancePage navigate={navigate}/>;
+    case 'finance':    return canSeeFinance() ? <FinancePage navigate={navigate}/> : <Dashboard navigate={navigate}/>;
     case 'inbody':     return <InBodyPage navigate={navigate}/>;
     case 'hep':        return <HEPLibraryPage navigate={navigate}/>;
     case 'services':   return <ServicesPage/>;
@@ -9087,6 +9461,7 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'trash':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <RecycleBinPage/>;
     case 'categories': return <CategoriesPage/>;
     case 'settings':   return <SettingsPage/>;
+    case 'users':      return isAdminUser() ? <UserManagementPage/> : <Dashboard navigate={navigate}/>;
     default:           return <Dashboard navigate={navigate}/>;
   }
 }
@@ -9117,7 +9492,9 @@ function App(){
 // AUTH — شاشة تسجيل الدخول (Supabase Auth)
 // ══════════════════════════════════════════════════
 function LoginScreen(){
-  const [mode,setMode]   = useState('login'); // login | signup
+  // ⚠️ التسجيل الذاتي أُغلق من جذره (Supabase ← Authentication ← Settings
+  // ← Allow new users to sign up = OFF). الحسابات تُنشأ فقط من لوحة الإدارة
+  // أو من Supabase Dashboard، ثم تُضبط صلاحياتها من شاشة «إدارة المستخدمين».
   const [email,setEmail] = useState('');
   const [pw,setPw]       = useState('');
   const [busy,setBusy]   = useState(false);
@@ -9128,16 +9505,9 @@ function LoginScreen(){
     e.preventDefault();
     setBusy(true); setErr(''); setMsg('');
     try {
-      if (mode === 'signup') {
-        const { error } = await _supaClient.auth.signUp({ email: email.trim(), password: pw });
-        if (error) throw error;
-        setMsg('✅ تم إنشاء الحساب. إن طُلب تفعيل البريد فافتح رسالة التفعيل، ثم سجّل الدخول.');
-        setMode('login');
-      } else {
-        const { error } = await _supaClient.auth.signInWithPassword({ email: email.trim(), password: pw });
-        if (error) throw error;
-        // onAuthStateChange في RootApp سيتكفّل بإظهار النظام
-      }
+      const { error } = await _supaClient.auth.signInWithPassword({ email: email.trim(), password: pw });
+      if (error) throw error;
+      // onAuthStateChange في RootApp سيتكفّل بإظهار النظام
     } catch(e2) {
       const m = (e2 && e2.message) || 'تعذّر تسجيل الدخول';
       setErr(m.includes('Invalid login') ? 'بريد أو كلمة مرور غير صحيحة' :
@@ -9156,7 +9526,7 @@ function LoginScreen(){
             justifyContent:'center',fontSize:34,boxShadow:'0 8px 20px rgba(232,160,32,0.4)'}}>🏥</div>
           <h1 style={{fontSize:20,fontWeight:900,color:'var(--primary)',margin:0}}>Motion Clinic</h1>
           <p style={{fontSize:12.5,color:'var(--text-light)',marginTop:4}}>
-            {mode==='login' ? 'سجّل الدخول للوصول إلى نظام العيادة' : 'إنشاء حساب موظف جديد'}
+            سجّل الدخول للوصول إلى نظام العيادة
           </p>
         </div>
 
@@ -9177,22 +9547,12 @@ function LoginScreen(){
 
           <button type="submit" className="btn btn-primary" disabled={busy}
             style={{width:'100%',justifyContent:'center',padding:'11px'}}>
-            {busy ? '⏳ جارٍ...' : (mode==='login' ? '🔐 دخول' : '✨ إنشاء الحساب')}
+            {busy ? '⏳ جارٍ...' : '🔐 دخول'}
           </button>
         </form>
 
-        <div style={{textAlign:'center',marginTop:16,fontSize:12.5,color:'var(--text-light)'}}>
-          {mode==='login' ? (
-            <span>ليس لديك حساب؟{' '}
-              <button onClick={()=>{setMode('signup');setErr('');setMsg('');}}
-                style={{background:'none',border:'none',color:'var(--primary)',fontWeight:800,cursor:'pointer',fontFamily:'Cairo,sans-serif'}}>أنشئ حساباً</button>
-            </span>
-          ) : (
-            <span>لديك حساب بالفعل؟{' '}
-              <button onClick={()=>{setMode('login');setErr('');setMsg('');}}
-                style={{background:'none',border:'none',color:'var(--primary)',fontWeight:800,cursor:'pointer',fontFamily:'Cairo,sans-serif'}}>تسجيل الدخول</button>
-            </span>
-          )}
+        <div style={{textAlign:'center',marginTop:16,fontSize:12,color:'var(--text-light)',lineHeight:1.8}}>
+          ليس لديك حساب؟ لإنشاء حساب موظف جديد تواصل مع إدارة العيادة.
         </div>
       </div>
     </div>
@@ -9202,21 +9562,33 @@ function LoginScreen(){
 // مكوّن الجذر: يتحكّم بحالة الجلسة ويعرض إمّا تسجيل الدخول أو النظام
 function RootApp(){
   const [session,setSession] = useState(undefined); // undefined=قيد التحميل
+  const [profile,setProfile] = useState(undefined); // undefined=قيد التحميل، null=غير موجود
+
+  const loadProfile = async (uid) => {
+    if (!uid) { setProfile(null); window.__MC_ROLE = null; return; }
+    try {
+      const { data, error } = await _supaClient.from('profiles').select('*').eq('id', uid).single();
+      if (error || !data) { setProfile(null); window.__MC_ROLE = null; return; }
+      setProfile(data);
+      window.__MC_ROLE = data.active ? data.role : null;
+    } catch(e) { setProfile(null); window.__MC_ROLE = null; }
+  };
 
   useEffect(()=>{
     _supaClient.auth.getSession().then(({data})=>{
       window.__MC_USER = data.session ? data.session.user : null;
       setSession(data.session || null);
+      loadProfile(data.session ? data.session.user.id : null);
     });
     const { data: sub } = _supaClient.auth.onAuthStateChange((_event, s)=>{
       window.__MC_USER = s ? s.user : null;
       setSession(s);
-      if (s) loadApiKeyFromSupabase();   // أعد جلب مفتاح AI بعد الدخول (RLS)
+      loadProfile(s ? s.user.id : null);
     });
     return ()=>{ try{ sub.subscription.unsubscribe(); }catch(e){} };
   },[]);
 
-  if (session === undefined) {
+  if (session === undefined || (session && profile === undefined)) {
     return (
       <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
         background:'linear-gradient(170deg,#1a3c5e,#0a1f36)',color:'#fff',fontFamily:'Cairo,sans-serif',
@@ -9227,32 +9599,25 @@ function RootApp(){
     );
   }
   if (!session) return <LoginScreen/>;
+  if (!profile || !profile.active) {
+    return (
+      <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+        background:'linear-gradient(170deg,#1a3c5e,#0a1f36)',color:'#fff',fontFamily:'Cairo,sans-serif',
+        flexDirection:'column',gap:14,textAlign:'center',padding:20}}>
+        <div style={{fontSize:40}}>🚫</div>
+        <div style={{fontSize:16,fontWeight:800}}>حسابك غير مُفعَّل</div>
+        <div style={{fontSize:13,opacity:0.85,maxWidth:360,lineHeight:1.8}}>
+          تواصل مع إدارة العيادة لتفعيل حسابك أو لمعرفة السبب.
+        </div>
+        <button className="btn" style={{marginTop:10}} onClick={()=>_supaClient.auth.signOut()}>
+          🚪 تسجيل الخروج
+        </button>
+      </div>
+    );
+  }
   return <App/>;
 }
 
-// ── API Key — يُجلب من Supabase تلقائياً ──────────
-async function loadApiKeyFromSupabase() {
-  try {
-    const { data, error } = await _supaClient
-      .from('clinic_settings')
-      .select('value')
-      .eq('key', 'anthropic_api_key')
-      .single();
-    if (data?.value) {
-      window.ANTHROPIC_API_KEY = data.value;
-      localStorage.setItem('mc_api_key', data.value);
-      console.log('✅ API Key loaded from Supabase');
-    } else {
-      window.ANTHROPIC_API_KEY = localStorage.getItem('mc_api_key') || '';
-      console.warn('⚠️ API Key not found in Supabase, using cached key');
-    }
-  } catch(e) {
-    window.ANTHROPIC_API_KEY = localStorage.getItem('mc_api_key') || '';
-    console.warn('⚠️ Could not reach Supabase, using cached API Key');
-  }
-}
-loadApiKeyFromSupabase();
-// ─────────────────────────────────────────────────
 ReactDOM.createRoot(document.getElementById('root')).render(<RootApp/>);
 </script>
 
