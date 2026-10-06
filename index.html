@@ -958,6 +958,8 @@ const DEF_CATEGORIES = {
   sessionTypes:[
     {id:'stype1',label:'تقييم أولي'},{id:'stype2',label:'جلسة علاجية'},{id:'stype3',label:'جلسة متابعة'},
     {id:'stype4',label:'جلسة InBody'},{id:'stype5',label:'استشارة'},{id:'stype6',label:'إعادة تقييم'},
+    {id:'stype7',label:'جلسة علاج طبيعي'},{id:'stype8',label:'تقييم شامل'},{id:'stype9',label:'قياس InBody'},
+    {id:'stype10',label:'جلسة حجامة'},{id:'stype11',label:'استشارة تغذية'},
   ],
   inventoryCategories:[
     {id:'ic1',label:'مستهلكات إبر'},{id:'ic2',label:'أشرطة طبية'},{id:'ic3',label:'زيوت ومواد'},
@@ -972,6 +974,20 @@ const DEF_CATEGORIES = {
     {id:'hep4',label:'تمارين إطالة'},{id:'hep5',label:'تمارين تنفس'},{id:'hep6',label:'تمارين وظيفية'},
   ],
 };
+// العيادات القائمة قبل هذا التحديث لديها نسخة محفوظة سحابياً من categories بدون هذه الأنواع الـ5 —
+// هذه الدالة تضيفها تلقائياً (مرة واحدة، idempotent) دون حذف أي نوع موجود مسبقاً.
+const REQUIRED_SESSION_TYPES = ['جلسة علاج طبيعي','تقييم شامل','قياس InBody','جلسة حجامة','استشارة تغذية'];
+function ensureSessionTypes(cats){
+  if(!cats) return cats;
+  const list = cats.sessionTypes || [];
+  const existingLabels = new Set(list.map(s=>s.label));
+  const missing = REQUIRED_SESSION_TYPES.filter(l=>!existingLabels.has(l));
+  if(missing.length===0) return cats;
+  let maxN = 0;
+  list.forEach(s=>{ const n=parseInt(String(s.id||'').replace('stype',''))||0; if(n>maxN) maxN=n; });
+  const added = missing.map((label,i)=>({id:'stype'+(maxN+1+i), label}));
+  return {...cats, sessionTypes:[...list, ...added]};
+}
 
 const DEF_SERVICES = [
   {id:'SV001',name:'جلسة علاج طبيعي',category:'علاج طبيعي',price:15000,duration:60,active:true},
@@ -1119,7 +1135,7 @@ function ClinicProvider({ children }) {
   // ⚠️ سجلات المرضى تبدأ فارغة دائماً — لا بيانات تجريبية تُزرع (تمنع تلوث البيانات والتداخل بين الأجهزة)
   // الإعدادات والتصنيفات فقط تبقى لها قيم افتراضية لأنها إعدادات وليست سجلات.
   const [settings,    setSettings]   = useState(() => ls('mc6_settings',    DEF_SETTINGS));
-  const [categories,  setCategories] = useState(() => ls('mc6_categories',  DEF_CATEGORIES));
+  const [categories,  setCategories] = useState(() => ensureSessionTypes(ls('mc6_categories',  DEF_CATEGORIES)));
   const [patients,    setPatients]   = useState(() => ls('mc6_patients',    []));
   const [records,     setRecords]    = useState(() => ls('mc6_records',     []));
   const [sessions,    setSessions]   = useState(() => ls('mc6_sessions',    []));
@@ -1374,7 +1390,7 @@ function ClinicProvider({ children }) {
           const cloudSettings = await sb.selectKV('settings');
           if (cloudSettings) setSettings(s => ({ ...s, ...cloudSettings }));
           const cloudCats = await sb.selectKV('categories');
-          if (cloudCats) setCategories(cloudCats);
+          if (cloudCats) setCategories(ensureSessionTypes(cloudCats));
         }
       } catch(e) {}
 
@@ -2047,6 +2063,8 @@ function Dashboard({navigate}){
   const totalRev = finance.filter(f=>f.status==='مدفوع').reduce((s,f)=>s+(f.paid||0),0);
   const totalExp = expenses.reduce((s,e)=>s+(e.amount||0),0);
   const lowStock = inventory.filter(i=>i.quantity<=i.minLevel);
+  const patMap = Object.fromEntries(patients.map(p=>[String(p.id),p]));
+  const pname = (a) => (patMap[String(a.patientId)]&&patMap[String(a.patientId)].name) || a.patientName || '—';
   const activePatients = patients.filter(p=>p.status==='نشط').length;
   const cur = settings.currency || 'ل.س';
   const todaySessions = sessions.filter(s=>s.date===todayStr);
@@ -2069,7 +2087,7 @@ function Dashboard({navigate}){
     const p = patients.find(x=>String(x.id)===String(a.patientId)) || {};
     let ph=(p.phone||a.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
     if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
-    const msg = `مرحباً ${a.patientName||''} 🌿\nنذكّركم بموعدكم في ${settings.clinicName||'العيادة'} اليوم ${a.date} الساعة ${a.time}.\nبانتظاركم 🙏`;
+    const msg = `مرحباً ${pname(a)!=='—'?pname(a):''} 🌿\nنذكّركم بموعدكم في ${settings.clinicName||'العيادة'} اليوم ${a.date} الساعة ${a.time}.\nبانتظاركم 🙏`;
     window.open(`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`,'_blank');
   };
   // ── 🔔 تذكير مواعيد الغد برسالة مطمئنة (القالب قابل للتعديل) ──
@@ -2081,7 +2099,7 @@ function Dashboard({navigate}){
   const reminderVars = (a) => {
     const p = patients.find(x=>String(x.id)===String(a.patientId)) || {};
     return {
-      name: a.patientName || p.name || '',
+      name: p.name || a.patientName || '',
       date: a.date || '', time: a.time || '',
       service: a.service || 'جلسة علاج طبيعي',
       therapist: a.therapist || p.assignedTherapist || settings.therapistName || '',
@@ -2208,7 +2226,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
                   {todayApts.map(a=>(
                     <tr key={a.id}>
                       <td><strong>{a.time}</strong></td>
-                      <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{a.patientName}</td>
+                      <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{pname(a)}</td>
                       <td><StatusBadge status={a.status}/></td>
                       <td style={{whiteSpace:'nowrap'}}>
                         <button className="row-action-btn" title="حضر" style={{color:'#059669'}} onClick={()=>markAtt(a,'completed')}>✅</button>
@@ -2258,7 +2276,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
                 {tomorrowApts.map(a=>(
                   <tr key={a.id}>
                     <td><strong>{a.time}</strong></td>
-                    <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{a.patientName}</td>
+                    <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{pname(a)}</td>
                     <td>{a.service||'—'}</td>
                     <td>{a.therapist||'—'}</td>
                     <td>{a.reminded
@@ -2291,7 +2309,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
         <div className="modal-overlay" onClick={()=>setPreviewApt(null)}>
           <div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
             <div className="modal-header">
-              <h2>👁 الرسالة التي ستُرسل إلى {previewApt.patientName}</h2>
+              <h2>👁 الرسالة التي ستُرسل إلى {pname(previewApt)}</h2>
               <button className="modal-close" onClick={()=>setPreviewApt(null)}>✕</button>
             </div>
             <div className="modal-body">
@@ -2323,7 +2341,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
                   <tr key={a.id}>
                     <td>{a.date}</td>
                     <td><strong>{a.time}</strong></td>
-                    <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{a.patientName}</td>
+                    <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate('patient',a.patientId)}>{pname(a)}</td>
                     <td>{a.therapist||'—'}</td>
                     <td style={{whiteSpace:'nowrap'}}>
                       <button className="btn btn-sm" style={{background:'#05966922',color:'#059669',marginLeft:4}} onClick={()=>markAtt(a,'completed')}>✅ حضر</button>
@@ -2924,7 +2942,13 @@ function PatientProfile({patientId, navigate}){
                     )}
                     {s.notes&&<div style={{marginTop:8,fontSize:13,color:'var(--text-mid)'}}>{s.notes}</div>}
                     {s.hep&&<div style={{marginTop:8,padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:12}}><strong>🏠 تمارين منزلية:</strong> {s.hep}</div>}
-                    {s.paid>0&&<div style={{marginTop:8,fontSize:12,color:'var(--green)',fontWeight:700}}>💰 تم استلام: {fmt(s.paid)} {s.currency||''}</div>}
+                    {canSeeFinance() && (
+                      s.isFree
+                        ? <div style={{marginTop:8,fontSize:12,color:'var(--orange)',fontWeight:700}}>🆓 جلسة مجانية</div>
+                        : s.paid>0
+                          ? <div style={{marginTop:8,fontSize:12,color:'var(--green)',fontWeight:700}}>💰 تم استلام: {fmt(s.paid)} {s.currency||''}</div>
+                          : <div style={{marginTop:8,fontSize:12,color:'var(--red)',fontWeight:700}}>⏳ لم يُسجَّل دفع لهذه الجلسة</div>
+                    )}
                   </div>
                 ))
               )}
@@ -3595,10 +3619,10 @@ function SessionModal({patientId, patient, session, onClose}){
   const {addSession, updateSession, categories, settings} = useClinic();
   const isEdit = !!session;
   const [form,setForm] = useState(session||{
-    patientId, date:today(), type:'جلسة علاجية',
+    patientId, date:today(), type:'',
     techniques:[], duration:60, vasStart:5, vasEnd:3,
     therapistName:settings.therapistName, notes:'', hep:'',
-    paid:0, status:'completed',
+    paid:0, status:'completed', isFree:false,
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const tg=(id)=>f('techniques',form.techniques.includes(id)?form.techniques.filter(x=>x!==id):[...form.techniques,id]);
@@ -3621,6 +3645,7 @@ function SessionModal({patientId, patient, session, onClose}){
   };
 
   const save=()=>{
+    if(!form.type){ alert('⚠️ يجب اختيار نوع الخدمة قبل حفظ الجلسة.'); return; }
     if(isEdit) updateSession(session.id,form); else addSession({...form,id:nextId('SS')});
     onClose();
   };
@@ -3635,7 +3660,8 @@ function SessionModal({patientId, patient, session, onClose}){
         <div className="modal-body">
           <div className="form-row">
             <TF label="تاريخ الجلسة" type="date" value={form.date} onChange={v=>f('date',v)}/>
-            <SF label="نوع الجلسة" value={form.type} onChange={v=>f('type',v)} options={categories.sessionTypes.map(s=>s.label)}/>
+            <SF label="نوع الخدمة *" value={form.type} onChange={v=>f('type',v)}
+                options={[{value:'',label:'— اختر نوع الخدمة —'}, ...categories.sessionTypes.map(s=>({value:s.label,label:s.label}))]}/>
           </div>
           <div className="form-row">
             <TF label="مدة الجلسة (دقيقة)" type="number" value={form.duration} onChange={v=>f('duration',+v)}/>
@@ -3663,10 +3689,18 @@ function SessionModal({patientId, patient, session, onClose}){
             </button>
           </div>
           <TA label="🏠 التمارين المنزلية (HEP)" value={form.hep} onChange={v=>f('hep',v)} placeholder="التمارين المطلوبة من المريض في المنزل..."/>
-          <div className="form-row">
-            <TF label="المبلغ المدفوع" type="number" value={form.paid} onChange={v=>f('paid',+v)}/>
-            <SF label="حالة الجلسة" value={form.status} onChange={v=>f('status',v)} options={['completed','pending','cancelled']}/>
-          </div>
+          {canSeeFinance() && (
+            <div className="form-row">
+              <TF label="المبلغ المدفوع" type="number" value={form.paid} onChange={v=>f('paid',+v)}/>
+              <SF label="حالة الجلسة" value={form.status} onChange={v=>f('status',v)} options={['completed','pending','cancelled']}/>
+            </div>
+          )}
+          {canSeeFinance() && (
+            <label style={{display:'flex',alignItems:'center',gap:8,marginTop:-4,marginBottom:10,fontSize:13.5,fontWeight:700,color:form.isFree?'var(--orange)':'var(--text-mid)',cursor:'pointer'}}>
+              <input type="checkbox" checked={!!form.isFree} onChange={e=>f('isFree',e.target.checked)} style={{width:17,height:17,accentColor:'#d97706',cursor:'pointer'}}/>
+              🆓 جلسة مجانية (بدون مقابل مادي)
+            </label>
+          )}
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>إلغاء</button>
@@ -4380,7 +4414,7 @@ ${forPrint?'<div class="noprint" style="text-align:center;margin:18px"><button o
               {historyList.map(h=>(
                 <tr key={h.id}>
                   <td>{h.date}</td>
-                  <td style={{fontWeight:700,color:'var(--primary)'}}>{h.patientName}</td>
+                  <td style={{fontWeight:700,color:'var(--primary)'}}>{(patients.find(p=>String(p.id)===String(h.patientId))||{}).name || h.patientName}</td>
                   <td><span className="badge badge-green">{h.goal}</span></td>
                   <td style={{fontSize:12,color:'var(--text-mid)'}}>{h.diagnosis||'—'}</td>
                   <td><button className="btn btn-secondary btn-xs" onClick={()=>{setResult(h.result);setResultName(h.patientName);setViewHistory(null);}}>عرض</button></td>
@@ -4688,7 +4722,7 @@ ${forPrint?'<div class="noprint" style="text-align:center;margin:18px"><button o
 // CALENDAR
 // ══════════════════════════════════════════════════
 function CalendarPage(){
-  const {appointments, patients, staff} = useClinic();
+  const {appointments, patients, staff, settings, updateSettings} = useClinic();
   const [month,setMonth] = useState(new Date());
   const [modal,setModal] = useState(null);
   const [view,setView] = useState('month'); // month | week
@@ -4706,8 +4740,11 @@ function CalendarPage(){
   const statusColors = {confirmed:'var(--green)',pending:'var(--accent)',completed:'var(--blue)',cancelled:'var(--red)',missed:'#6b7280'};
   // — لون ثابت مميّز لكل طبيب/معالج (يسهّل قراءة التقويم) —
   const DOC_PALETTE = ['#2563eb','#059669','#d97706','#db2777','#7c3aed','#0891b2','#ca8a04','#dc2626','#4f46e5','#15803d','#9333ea','#0d9488'];
-  const therapistColor = (name) => { const s=String(name||'غير محدد'); let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return DOC_PALETTE[h%DOC_PALETTE.length]; };
+  const therapistColors = settings.therapistColors || {};
+  const therapistColor = (name) => { const n=String(name||'غير محدد'); if(therapistColors[n]) return therapistColors[n]; let h=0; for(let i=0;i<n.length;i++) h=(h*31+n.charCodeAt(i))>>>0; return DOC_PALETTE[h%DOC_PALETTE.length]; };
+  const setTherapistColor = (name,color) => updateSettings({therapistColors:{...therapistColors,[name]:color}});
   const patMap = Object.fromEntries(patients.map(p=>[p.id,p]));
+  const pname = (a) => (patMap[a.patientId]&&patMap[a.patientId].name) || a.patientName || '—';
   // توحيد اسم المعالج: أي اسم مكتوب بصيغة مختلفة يُطابَق مع اسمه الموحّد في «فريق العمل»
   // فتظهر قائمة التصفية بعدد المعالجين النشطين الحقيقي فقط، دون تكرار.
   const staffCanon = {};
@@ -4740,9 +4777,16 @@ function CalendarPage(){
           <span style={{fontWeight:800,color:'var(--text-mid)'}}>👨‍⚕️ المعالج:</span>
           <button onClick={()=>setFilterTherapist('')} style={{cursor:'pointer',border:'none',borderRadius:20,padding:'4px 12px',fontWeight:800,fontSize:12,background:!filterTherapist?'var(--primary)':'#e5e7eb',color:!filterTherapist?'#fff':'#475569'}}>الكل</button>
           {therapists.map(t=>{ const on=filterTherapist===t; const c=therapistColor(t); return (
-            <button key={t} onClick={()=>setFilterTherapist(on?'':t)} style={{cursor:'pointer',display:'inline-flex',alignItems:'center',gap:6,fontWeight:700,border:'1px solid '+c,borderRadius:20,padding:'4px 12px',background:on?c:c+'18',color:on?'#fff':c}}>
-              <span style={{width:11,height:11,borderRadius:4,background:on?'#fff':c}}/>{t}
-            </button>
+            <span key={t} style={{display:'inline-flex',alignItems:'center',gap:2}}>
+              <button onClick={()=>setFilterTherapist(on?'':t)} style={{cursor:'pointer',display:'inline-flex',alignItems:'center',gap:6,fontWeight:700,border:'1px solid '+c,borderRadius:20,padding:'4px 12px',background:on?c:c+'18',color:on?'#fff':c}}>
+                <span style={{width:11,height:11,borderRadius:4,background:on?'#fff':c}}/>{t}
+              </button>
+              {isAdminUser() && (
+                <input type="color" value={c} title={`🎨 اختر لون ${t}`}
+                  onChange={e=>setTherapistColor(t,e.target.value)}
+                  style={{width:22,height:22,padding:0,border:'none',borderRadius:6,cursor:'pointer',background:'transparent'}}/>
+              )}
+            </span>
           ); })}
         </div>
       )}
@@ -4774,8 +4818,8 @@ function CalendarPage(){
                         <div key={a.id} style={{fontSize:10,padding:'2px 4px',borderRadius:4,marginBottom:2,cursor:'pointer',
                           background:dc+'22',color:dc,fontWeight:700,borderRight:`3px solid ${dc}`,borderLeft:`3px solid ${statusColors[a.status]}`,
                           overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
-                          title={`${a.time} — ${a.patientName} — د. ${apptTher(a)} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
-                          {a.time} {a.patientName}
+                          title={`${a.time} — ${pname(a)} — د. ${apptTher(a)} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
+                          {a.time} {pname(a)}
                         </div>
                       ); })}
                     </div>;
@@ -4816,8 +4860,8 @@ function CalendarPage(){
                       fontSize:10.5,padding:'2px 5px',borderRadius:4,marginBottom:2,
                       background:dc+'22',color:dc,fontWeight:700,borderRight:`3px solid ${dc}`,
                       cursor:'pointer',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
-                    }} title={`${a.patientName} — د. ${apptTher(a)} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
-                      {a.time} {a.patientName}
+                    }} title={`${pname(a)} — د. ${apptTher(a)} (${a.status})`} onClick={()=>setModal({type:'apt',data:a})}>
+                      {a.time} {pname(a)}
                     </div>
                   ); })}
                 </div>
@@ -4843,6 +4887,8 @@ function FinancePage({navigate}){
   const [search,setSearch] = useState('');
   const [period,setPeriod] = useState('month'); // month | last | year | all
   const cur = settings.currency || 'ل.س';
+  const patMap = Object.fromEntries(patients.map(p=>[String(p.id),p]));
+  const pname = (f) => (patMap[String(f.patientId)]&&patMap[String(f.patientId)].name) || f.patientName || '—';
 
   // — تحديد المدة الزمنية —
   const now = new Date();
@@ -4894,7 +4940,7 @@ function FinancePage({navigate}){
   }
   const trendMax = Math.max(1, ...trend.map(t=>Math.max(t.rev,t.ex)));
 
-  const filteredInv = finP.filter(f=>!search||f.patientName?.includes(search)||f.id?.includes(search)||f.serviceLabel?.includes(search));
+  const filteredInv = finP.filter(f=>!search||pname(f)?.includes(search)||f.id?.includes(search)||f.serviceLabel?.includes(search));
 
   // ═══ التقارير الدورية: يومي / أسبوعي / شهري ═══
   const isoD = (x)=>{ const m=x.getMonth()+1, dd=x.getDate(); return x.getFullYear()+'-'+(m<10?'0':'')+m+'-'+(dd<10?'0':'')+dd; };
@@ -4996,7 +5042,7 @@ ${rTherRows.map(([k,v])=>tr([k,v])).join('')||'<tr><td colspan=2 style="text-ali
 ${rExpRows.map(([k,v])=>tr([k,fmt(v)+' '+cur])).join('')||'<tr><td colspan=2 style="text-align:center;color:#888">لا مصروفات</td></tr>'}
 </table>
 <h2>الفواتير</h2><table><tr><th>رقم</th><th>التاريخ</th><th>المريض</th><th>الخدمة</th><th>الإجمالي</th><th>مدفوع</th><th>متبقي</th><th>الحالة</th></tr>
-${rInv.map(f=>tr([f.id,f.date,f.patientName||'—',f.serviceLabel||'—',fmt(f.total||0),fmt(f.paid||0),fmt(f.remaining||0),f.status||''])).join('')||'<tr><td colspan=8 style="text-align:center;color:#888">لا فواتير</td></tr>'}
+${rInv.map(f=>tr([f.id,f.date,pname(f),f.serviceLabel||'—',fmt(f.total||0),fmt(f.paid||0),fmt(f.remaining||0),f.status||''])).join('')||'<tr><td colspan=8 style="text-align:center;color:#888">لا فواتير</td></tr>'}
 </table>
 <div class="foot">${settings.clinicName||'Motion Clinic'} — ${settings.phone||''}</div>
 <div class="noprint" style="text-align:center;margin-top:18px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 28px;border-radius:10px;font-size:15px;font-family:Cairo;cursor:pointer;font-weight:700">🖨️ طباعة / حفظ PDF</button></div>
@@ -5078,7 +5124,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
   <div class="inv-meta"><div class="t">فاتورة</div><p>رقم: <b>${f.id}</b></p><p>التاريخ: ${f.date||today()}</p><div class="badge">${f.status||''}</div></div>
 </div>
 <div class="party">
-  <div class="box"><h3>الفاتورة إلى</h3><div class="n">${f.patientName||p.name||'—'}</div>${p.phone?`<p>📞 ${p.phone}</p>`:''}${p.id?`<p>كود المريض: ${p.id}</p>`:''}</div>
+  <div class="box"><h3>الفاتورة إلى</h3><div class="n">${p.name||f.patientName||'—'}</div>${p.phone?`<p>📞 ${p.phone}</p>`:''}${p.id?`<p>كود المريض: ${p.id}</p>`:''}</div>
   <div class="box"><h3>طريقة الدفع</h3><div class="n">${f.paymentMethod||'نقدي'}</div><p>المعالج: ${settings.therapistName||''}</p></div>
 </div>
 <table><thead><tr><th style="width:40px">#</th><th>البيان</th><th style="width:60px;text-align:center">الكمية</th><th style="width:130px;text-align:left">السعر</th></tr></thead><tbody>${itemsRows}</tbody></table>
@@ -5101,7 +5147,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
     let ph = (p.phone||'').replace(/[^0-9]/g,'');
     if(ph.startsWith('0')) ph = '963'+ph.slice(1);
     if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
-    const msg = `مرحباً ${f.patientName||''} 🌿\nنذكّركم بلطف بوجود مبلغ متبقٍّ على فاتورتكم رقم ${f.id} بقيمة ${fmt(f.remaining)} ${cur}.\nنتمنى لكم دوام الصحة 🙏\n${settings.clinicName||'Motion Clinic'}`;
+    const msg = `مرحباً ${p.name||f.patientName||''} 🌿\nنذكّركم بلطف بوجود مبلغ متبقٍّ على فاتورتكم رقم ${f.id} بقيمة ${fmt(f.remaining)} ${cur}.\nنتمنى لكم دوام الصحة 🙏\n${settings.clinicName||'Motion Clinic'}`;
     window.open(`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`,'_blank');
   };
 
@@ -5223,7 +5269,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
               {filteredInv.map(f=>(
                 <tr key={f.id}>
                   <td><strong>{f.id}</strong></td><td>{f.date}</td>
-                  <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate&&navigate('patient',f.patientId)}>{f.patientName}</td>
+                  <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate&&navigate('patient',f.patientId)}>{pname(f)}</td>
                   <td>{f.serviceLabel}</td>
                   <td>{fmt(f.total)}</td>
                   <td>{f.discount>0?fmt(f.discount):'—'}</td>
@@ -5249,7 +5295,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
         const byPat = {};
         finance.filter(f=>(f.remaining||0)>0).forEach(f=>{
           const k = f.patientId || f.patientName || f.id;
-          if(!byPat[k]) byPat[k] = {patientId:f.patientId, name:f.patientName||'—', total:0, count:0, oldest:f.date, invs:[]};
+          if(!byPat[k]) byPat[k] = {patientId:f.patientId, name:pname(f), total:0, count:0, oldest:f.date, invs:[]};
           byPat[k].total += (f.remaining||0);
           byPat[k].count += 1;
           byPat[k].invs.push(f);
@@ -5448,7 +5494,7 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
               <tbody>
                 {rInv.map(f=>(
                   <tr key={f.id}>
-                    <td style={{fontWeight:700}}>{f.id}</td><td>{f.date}</td><td>{f.patientName||'—'}</td><td>{f.serviceLabel||'—'}</td>
+                    <td style={{fontWeight:700}}>{f.id}</td><td>{f.date}</td><td>{pname(f)}</td><td>{f.serviceLabel||'—'}</td>
                     <td>{fmt(f.total||0)}</td>
                     <td style={{color:'var(--green)',fontWeight:700}}>{fmt(f.paid||0)}</td>
                     <td style={{color:(f.remaining||0)>0?'var(--red)':'var(--text-light)',fontWeight:700}}>{fmt(f.remaining||0)}</td>
@@ -5649,7 +5695,7 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
                         const ageCol=f.age>90?'var(--red)':f.age>60?'#d97706':f.age>30?'var(--accent)':'var(--text-mid)';
                         return (
                           <tr key={i}>
-                            <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate&&navigate('patient',f.patientId)}>{f.patientName}</td>
+                            <td style={{cursor:'pointer',color:'var(--primary)',fontWeight:700}} onClick={()=>navigate&&navigate('patient',f.patientId)}>{pname(f)}</td>
                             <td>{f.id}</td>
                             <td>{f.date||'—'}</td>
                             <td><strong style={{color:ageCol}}>{f.age} يوم</strong></td>
@@ -6181,14 +6227,22 @@ function HEPLibraryPage({navigate}){
 function InventoryPage(){
   const {inventory, addInventory, updateInventory, deleteInventory, categories} = useClinic();
   const [modal,setModal] = useState(null);
+  const [tab,setTab] = useState('all'); // all | needs
   const lowStock = inventory.filter(i=>i.quantity<=i.minLevel);
+  const needsList = inventory.filter(i=>i.quantity<=i.minLevel || i.needed);
+  const toggleNeeded = (i) => updateInventory(i.id,{...i,needed:!i.needed});
+  const list = tab==='needs' ? needsList : inventory;
 
   return(
     <div className="page-content">
       <div className="page-header">
         <div><h1 className="page-title">📦 إدارة المخزون</h1>
-          <p className="page-subtitle">{inventory.length} عنصر — {lowStock.length} منخفض</p></div>
+          <p className="page-subtitle">{inventory.length} عنصر — {lowStock.length} منخفض — {needsList.length} بحاجة توفير</p></div>
         <button className="btn btn-accent" onClick={()=>setModal({})}>+ عنصر جديد</button>
+      </div>
+      <div className="btn-group" style={{display:'flex',background:'var(--surface)',borderRadius:8,padding:3,marginBottom:14,width:'fit-content'}}>
+        <button className={`btn btn-sm ${tab==='all'?'btn-primary':'btn-ghost'}`} onClick={()=>setTab('all')}>📦 كل العناصر ({inventory.length})</button>
+        <button className={`btn btn-sm ${tab==='needs'?'btn-primary':'btn-ghost'}`} onClick={()=>setTab('needs')}>📋 الاحتياجات ({needsList.length})</button>
       </div>
       {lowStock.length>0&&(
         <div className="alert alert-danger" style={{marginBottom:16}}>
@@ -6197,9 +6251,9 @@ function InventoryPage(){
       )}
       <div className="card">
         <table className="data-table">
-          <thead><tr><th>الكود</th><th>الاسم</th><th>الفئة</th><th>الكمية</th><th>الوحدة</th><th>الحد الأدنى</th><th>الحالة</th><th>آخر طلب</th><th>التكلفة</th><th>إجراءات</th></tr></thead>
+          <thead><tr><th>الكود</th><th>الاسم</th><th>الفئة</th><th>الكمية</th><th>الوحدة</th><th>الحد الأدنى</th><th>الحالة</th>{tab==='needs'&&<th>السبب</th>}<th>آخر طلب</th><th>التكلفة</th><th>إجراءات</th></tr></thead>
           <tbody>
-            {inventory.map(i=>{
+            {list.map(i=>{
               const isLow = i.quantity<=i.minLevel;
               return(
                 <tr key={i.id}>
@@ -6210,9 +6264,17 @@ function InventoryPage(){
                   <td>{i.unit}</td>
                   <td>{i.minLevel}</td>
                   <td><span className={`badge ${isLow?'badge-red':'badge-green'}`}>{isLow?'🔴 منخفض':'✅ جيد'}</span></td>
+                  {tab==='needs'&&(
+                    <td>{isLow
+                      ? <span className="badge badge-red">كمية منخفضة</span>
+                      : <span className="badge" style={{background:'#fef3c7',color:'#92400e'}}>طلب يدوي</span>}</td>
+                  )}
                   <td>{i.lastOrder}</td>
                   <td>{fmt(i.cost)}</td>
                   <td><div className="row-actions">
+                    {!isLow && (
+                      <button className="row-action-btn" title={i.needed?'إزالة من الاحتياجات':'📋 أضف للاحتياجات'} style={{color:i.needed?'var(--orange)':undefined}} onClick={()=>toggleNeeded(i)}>📋</button>
+                    )}
                     <button className="row-action-btn" onClick={()=>setModal(i)}>✏️</button>
                     <button className="row-action-btn danger" onClick={()=>{if(confirm('حذف العنصر؟'))deleteInventory(i.id);}}>🗑</button>
                   </div></td>
@@ -6221,7 +6283,7 @@ function InventoryPage(){
             })}
           </tbody>
         </table>
-        {inventory.length===0&&<div className="empty-state"><div className="icon">📦</div><h3>لا عناصر</h3></div>}
+        {list.length===0&&<div className="empty-state"><div className="icon">📦</div><h3>{tab==='needs'?'لا توجد احتياجات حالياً':'لا عناصر'}</h3></div>}
       </div>
       {modal&&<InventoryModal item={Object.keys(modal).length===0?null:modal} categories={categories.inventoryCategories} onClose={()=>setModal(null)}/>}
     </div>
@@ -6231,7 +6293,7 @@ function InventoryPage(){
 function InventoryModal({item, categories, onClose}){
   const {addInventory, updateInventory} = useClinic();
   const isEdit = !!item;
-  const [form,setForm] = useState(item||{name:'',category:'',quantity:0,unit:'',minLevel:10,lastOrder:today(),cost:0});
+  const [form,setForm] = useState(item||{name:'',category:'',quantity:0,unit:'',minLevel:10,lastOrder:today(),cost:0,needed:false});
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const save=()=>{
     if(!form.name){alert('الاسم مطلوب');return;}
@@ -6257,6 +6319,10 @@ function InventoryModal({item, categories, onClose}){
             <TF label="آخر طلب" type="date" value={form.lastOrder} onChange={v=>f('lastOrder',v)}/>
             <TF label="التكلفة" type="number" value={form.cost} onChange={v=>f('cost',v)}/>
           </div>
+          <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13.5,fontWeight:700,color:form.needed?'var(--orange)':'var(--text-mid)',cursor:'pointer'}}>
+            <input type="checkbox" checked={!!form.needed} onChange={e=>f('needed',e.target.checked)} style={{width:17,height:17,accentColor:'#d97706',cursor:'pointer'}}/>
+            📋 يحتاج توفير (حتى لو لم تصل الكمية للحد الأدنى)
+          </label>
         </div>
         <div className="modal-footer"><button className="btn btn-ghost" onClick={onClose}>إلغاء</button><div style={{flex:1}}/><button className="btn btn-accent" onClick={save}>💾 حفظ</button></div>
       </div>
@@ -9131,6 +9197,7 @@ function TaskCenterPage(){
 
   // مرضى اليوم للمعالج (حسب المعالج المسؤول عن المريض أو المعالج على الموعد)
   const patMap = Object.fromEntries(patients.map(p=>[p.id,p]));
+  const pname = (a) => (patMap[a.patientId]&&patMap[a.patientId].name) || a.patientName || '—';
   const apptTher = (a)=> a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || '';
   const myApts = appointments.filter(a=>a.date===todayStr && (!myName || normName(apptTher(a))===normName(myName))).sort((a,b)=>String(a.time).localeCompare(String(b.time)));
   const markAtt = (a,status)=>updateAppointment(a.id,{...a,status});
@@ -9227,7 +9294,7 @@ function TaskCenterPage(){
                   {myApts.map(a=>(
                     <tr key={a.id}>
                       <td><strong>{a.time}</strong></td>
-                      <td style={{fontWeight:700}}>{a.patientName}</td>
+                      <td style={{fontWeight:700}}>{pname(a)}</td>
                       <td><StatusBadge status={a.status}/></td>
                       <td style={{whiteSpace:'nowrap'}}>
                         <button className="row-action-btn" title="حضر" style={{color:'#059669'}} onClick={()=>markAtt(a,'completed')}>✅</button>
