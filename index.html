@@ -483,7 +483,8 @@ window.__MC_ROLE = null;
 function myRole(){ return window.__MC_ROLE || 'therapist'; } // أقل صلاحية افتراضياً حتى يُحمَّل الدور
 function isAdminUser(){ return myRole() === 'admin'; }
 // الفواتير: مدير أو استقبال. المصاريف: مدير فقط دوماً (مفروضة أيضاً بـ RLS).
-function canSeeFinance(){ const r = myRole(); return r === 'admin' || r === 'reception'; }
+// في ملف الموظفين (STAFF_MODE) تُخفى المالية بالكامل من الواجهة بلا أي استثناء لأي دور.
+function canSeeFinance(){ if(STAFF_MODE) return false; const r = myRole(); return r === 'admin' || r === 'reception'; }
 
 // ── تحمّل اختلاف المخطط (Schema drift) ──
 // إذا لم يُشغَّل supabase_migration.sql بعد، فأي حقل جديد يُفشل رفع السجل كاملاً
@@ -2708,8 +2709,10 @@ function PatientProfile({patientId, navigate}){
         {/* Quick stats */}
         <div style={{display:'flex',gap:12,margin:'16px 0',flexWrap:'wrap'}}>
           {[
-            ['💰 مدفوع', fmt(totalPaid)+' '+settings.currency, 'green'],
-            ['⏳ متبقي', fmt(totalPending)+' '+settings.currency, totalPending>0?'red':'green'],
+            ...(canSeeFinance() ? [
+              ['💰 مدفوع', fmt(totalPaid)+' '+settings.currency, 'green'],
+              ['⏳ متبقي', fmt(totalPending)+' '+settings.currency, totalPending>0?'red':'green'],
+            ] : []),
             ['📅 مواعيد', patApts.length, 'blue'],
             ['🔄 جلسات', patSes.length, 'purple'],
             ['🏥 سجلات', patRec.length, 'teal'],
