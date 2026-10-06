@@ -4686,7 +4686,7 @@ ${forPrint?'<div class="noprint" style="text-align:center;margin:18px"><button o
 // CALENDAR
 // ══════════════════════════════════════════════════
 function CalendarPage(){
-  const {appointments, patients} = useClinic();
+  const {appointments, patients, staff} = useClinic();
   const [month,setMonth] = useState(new Date());
   const [modal,setModal] = useState(null);
   const [view,setView] = useState('month'); // month | week
@@ -4706,8 +4706,13 @@ function CalendarPage(){
   const DOC_PALETTE = ['#2563eb','#059669','#d97706','#db2777','#7c3aed','#0891b2','#ca8a04','#dc2626','#4f46e5','#15803d','#9333ea','#0d9488'];
   const therapistColor = (name) => { const s=String(name||'غير محدد'); let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return DOC_PALETTE[h%DOC_PALETTE.length]; };
   const patMap = Object.fromEntries(patients.map(p=>[p.id,p]));
-  const apptTher = (a)=> a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || 'غير محدد';
-  const therapists = [...new Set(appointments.map(apptTher).filter(Boolean))];
+  // توحيد اسم المعالج: أي اسم مكتوب بصيغة مختلفة يُطابَق مع اسمه الموحّد في «فريق العمل»
+  // فتظهر قائمة التصفية بعدد المعالجين النشطين الحقيقي فقط، دون تكرار.
+  const staffCanon = {};
+  for(const s of (staff||[])){ if(s.status!=='متوقف' && s.name) staffCanon[normName(s.name)] = s.name; }
+  const canonTher = (name)=> staffCanon[normName(name)] || name;
+  const apptTher = (a)=> canonTher(a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || 'غير محدد');
+  const therapists = (staff||[]).filter(s=>s.status!=='متوقف' && s.name).map(s=>s.name);
   const shown = (a)=> !filterTherapist || apptTher(a)===filterTherapist;
 
   // — أيام الأسبوع الحالي (يبدأ بالأحد) —
@@ -8652,7 +8657,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       {id:'calendar',  icon:'📅', label:'التقويم', badge: todayApts.length||null},
       ...(canSeeFinance() ? [{id:'finance',   icon:'💰', label:'المالية'}] : []),
       {id:'hep',       icon:'🏋️', label:'مكتبة التمارين'},
-      {id:'services',  icon:'🛠️', label:'الخدمات والأسعار'},
+      ...(STAFF_MODE ? [] : [{id:'services',  icon:'🛠️', label:'الخدمات والأسعار'}]),
       {id:'inventory', icon:'📦', label:'المخزون', badge: lowStock.length||null},
     ]},
     { section:'التحليل', items:[
@@ -8667,8 +8672,8 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       {id:'tasks',      icon:'✅', label:'مهام الكادر'},
     ]},
     { section:'الإدارة', items:[
-      {id:'staff',      icon:'👨‍⚕️', label:'فريق العمل'},
-      {id:'audit',      icon:'🔒',  label:'سجل التعديلات'},
+      ...(STAFF_MODE ? [] : [{id:'staff', icon:'👨‍⚕️', label:'فريق العمل'}]),
+      ...(STAFF_MODE ? [] : [{id:'audit', icon:'🔒',  label:'سجل التعديلات'}]),
       ...(STAFF_MODE ? [] : [{id:'trash', icon:'🗑️', label:'سلة المحذوفات'}]),
       ...(isAdminUser() ? [{id:'users', icon:'🔐', label:'إدارة المستخدمين'}] : []),
     ]},
@@ -9125,7 +9130,7 @@ function TaskCenterPage(){
   // مرضى اليوم للمعالج (حسب المعالج المسؤول عن المريض أو المعالج على الموعد)
   const patMap = Object.fromEntries(patients.map(p=>[p.id,p]));
   const apptTher = (a)=> a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || '';
-  const myApts = appointments.filter(a=>a.date===todayStr && (!myName || apptTher(a)===myName)).sort((a,b)=>String(a.time).localeCompare(String(b.time)));
+  const myApts = appointments.filter(a=>a.date===todayStr && (!myName || normName(apptTher(a))===normName(myName))).sort((a,b)=>String(a.time).localeCompare(String(b.time)));
   const markAtt = (a,status)=>updateAppointment(a.id,{...a,status});
   const roleObj = TASK_ROLES.find(r=>r.key===role)||{};
 
@@ -9441,18 +9446,18 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'finance':    return canSeeFinance() ? <FinancePage navigate={navigate}/> : <Dashboard navigate={navigate}/>;
     case 'inbody':     return <InBodyPage navigate={navigate}/>;
     case 'hep':        return <HEPLibraryPage navigate={navigate}/>;
-    case 'services':   return <ServicesPage/>;
+    case 'services':   return STAFF_MODE ? <Dashboard navigate={navigate}/> : <ServicesPage/>;
     case 'inventory':  return <InventoryPage/>;
     case 'ai':         return <AIAssistantPage navigate={navigate}/>;
     case 'analytics':  return STAFF_MODE ? <Dashboard navigate={navigate}/> : <AnalyticsPage navigate={navigate}/> ;
     case 'reports':    return STAFF_MODE ? <Dashboard navigate={navigate}/> : <ReportsPage/>;
     case 'xray':       return <XRayPage navigate={navigate}/>;
     case 'notes':      return <NotesPage/>;
-    case 'staff':      return <StaffPage/>;
+    case 'staff':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <StaffPage/>;
     case 'opsreport':  return STAFF_MODE ? <Dashboard navigate={navigate}/> : <OpsReportPage/>;
     case 'attendance': return STAFF_MODE ? <Dashboard navigate={navigate}/> : <AttendancePage/>;
     case 'tasks':      return <TaskCenterPage/>;
-    case 'audit':      return <AuditPage/>;
+    case 'audit':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <AuditPage/>;
     case 'trash':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <RecycleBinPage/>;
     case 'categories': return <CategoriesPage/>;
     case 'settings':   return <SettingsPage/>;
