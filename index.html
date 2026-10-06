@@ -897,7 +897,7 @@ const DEF_SETTINGS = {
   clinicName:'Motion Clinic — عيادة الحركة',
   phone:'+963-XXX-XXXXXX', email:'info@motionclinic.com',
   address:'دمشق، سوريا', hours:'9:00 - 20:00', days:'الأحد — الجمعة',
-  currency:'ل.س', therapistName:'د. يامن شحادة',
+  currency:'ل.س', therapistName:'د. يامن نزية',
   logoEmoji:'🏥', logoImage:null, theme:'teal',
   website:'', taxNum:'', clinicSlogan:'الحركة طريق الصحة',
   // Labels customization (The Factory)
@@ -1013,7 +1013,7 @@ const DEF_RECORDS = [
   {id:'REC-001',patientId:'P-001',date:today(),complaint:'آلام شديدة في أسفل الظهر تمتد للساق اليمنى',
    diagnosis:'انزلاق غضروفي L4-L5',vas:7,duration:'1-3 أشهر',sessions:'12',frequency:'مرتان أسبوعياً',
    techniques:['t1','t2','t4'],goals:['g1','g2'],painLocation:'أسفل الظهر',
-   therapistName:'د. يامن شحادة',status:'pending',posture:'انحناء أمامي',gait:'طبيعية',
+   therapistName:'د. يامن نزية',status:'pending',posture:'انحناء أمامي',gait:'طبيعية',
    positiveTests:['st5'],historyNotes:'مريض سكري خفيف',meds:'yes',surgery:'no',
    impact:{sleep:'yes',work:'yes',sport:'yes',walk:'no'},therapistNotes:'',nextReview:''},
 ];
@@ -1021,16 +1021,16 @@ const DEF_RECORDS = [
 const DEF_SESSIONS = [
   {id:'SS-001',patientId:'P-001',recordId:'REC-001',date:today(),
    type:'جلسة علاجية',techniques:['t1','t4'],duration:60,vasStart:7,vasEnd:5,
-   therapistName:'د. يامن شحادة',notes:'تحسن ملحوظ في حدة الألم',
+   therapistName:'د. يامن نزية',notes:'تحسن ملحوظ في حدة الألم',
    hep:'تمارين تمدد أسفل الظهر 3x10، تمارين تقوية البطن',paid:15000,
    status:'completed'},
 ];
 
 const DEF_APTS = [
   {id:'APT-001',patientId:'P-001',patientName:'محمد العلي',date:today(),
-   time:'10:00',service:'SV001',status:'confirmed',notes:'',therapist:'د. يامن شحادة'},
+   time:'10:00',service:'SV001',status:'confirmed',notes:'',therapist:'د. يامن نزية'},
   {id:'APT-002',patientId:'P-002',patientName:'سارة محمود',date:today(),
-   time:'12:00',service:'SV002',status:'confirmed',notes:'مريض جديد',therapist:'د. يامن شحادة'},
+   time:'12:00',service:'SV002',status:'confirmed',notes:'مريض جديد',therapist:'د. يامن نزية'},
 ];
 
 const DEF_FINANCE = [
@@ -1044,17 +1044,17 @@ const DEF_FINANCE = [
 
 const DEF_INBODY = [
   {id:'IB-001',patientId:'P-001',date:'2025-01-15',weight:85,smi:38,bodyFat:24,bmi:27.5,
-   water:55,bmr:1820,visceralFat:9,score:72,notes:'بداية البرنامج',therapistName:'د. يامن شحادة'},
+   water:55,bmr:1820,visceralFat:9,score:72,notes:'بداية البرنامج',therapistName:'د. يامن نزية'},
   {id:'IB-002',patientId:'P-001',date:'2025-03-15',weight:82,smi:39.5,bodyFat:21,bmi:26.4,
-   water:57,bmr:1850,visceralFat:7,score:79,notes:'تحسن ممتاز',therapistName:'د. يامن شحادة'},
+   water:57,bmr:1850,visceralFat:7,score:79,notes:'تحسن ممتاز',therapistName:'د. يامن نزية'},
 ];
 
 const DEF_NOTES = [
-  {id:'NOTE-001',patientId:'P-001',date:today(),section:'متابعة',text:'المريض يلتزم بالتمارين المنزلية بشكل ممتاز',author:'د. يامن شحادة'},
+  {id:'NOTE-001',patientId:'P-001',date:today(),section:'متابعة',text:'المريض يلتزم بالتمارين المنزلية بشكل ممتاز',author:'د. يامن نزية'},
 ];
 
 const DEF_STAFF = [
-  {id:'STAFF-001',name:'د. يامن شحادة',role:'معالج رئيسي',specialty:'علاج طبيعي رياضي',phone:'0911111111',email:'yamen@motionclinic.com',status:'نشط'},
+  {id:'STAFF-001',name:'د. يامن نزية',role:'معالج رئيسي',specialty:'علاج طبيعي رياضي',phone:'0911111111',email:'yamen@motionclinic.com',status:'نشط'},
 ];
 
 const DEF_INVENTORY = [
@@ -1909,7 +1909,7 @@ function TA({label,value,onChange,placeholder='',rows=3}){
 }
 // أسماء الكادر — المصدر الوحيد: صفحة «فريق العمل». يحتفظ بالقيمة القديمة إن لم تعد ضمن الكادر.
 // توحيد شكل الاسم للمقارنة: إزالة الفراغات الزائدة + توحيد الألف/الهاء/الياء + حذف النقطة بعد "د"
-// حتى تُعتبر «د. يامن شحادة» و«د.يامن  شحاده» اسماً واحداً ولا تتكرر في القوائم.
+// حتى تُعتبر «د. يامن نزية» و«د.يامن  نزيه» اسماً واحداً ولا تتكرر في القوائم.
 function normName(n){
   const collapse = (x)=>x.split('\t').join(' ').split('\n').join(' ').split(' ').filter(Boolean).join(' ');
   let s = collapse(String(n||''));
@@ -2486,7 +2486,7 @@ function PatientModal({patient,onClose}){
   const [form,setForm] = useState(patient||{
     name:'',phone:'',dob:'',gender:'ذكر',bloodType:'',allergy:'لا يوجد',
     job:'',source:'',address:'',status:'نشط',notes:'',emergency:'',email:'',
-    assignedTherapist:'', recommendations:[],
+    assignedTherapist:'', recommendations:[], waiting:false,
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const save=()=>{
@@ -2529,7 +2529,12 @@ function PatientModal({patient,onClose}){
           </div>
           <div className="form-row">
             <StaffSelect label="🩺 المعالج المسؤول" value={form.assignedTherapist} onChange={v=>f('assignedTherapist',v)}/>
-            <div/>
+            <Field label="قائمة الانتظار">
+              <label style={{display:'flex',alignItems:'center',gap:8,marginTop:8,fontSize:13.5,fontWeight:700,color:form.waiting?'var(--orange)':'var(--text-mid)',cursor:'pointer'}}>
+                <input type="checkbox" checked={!!form.waiting} onChange={e=>f('waiting',e.target.checked)} style={{width:17,height:17,accentColor:'#d97706',cursor:'pointer'}}/>
+                ⏳ بانتظار موعد أقرب (يُقترح كبديل عند إلغاء موعد)
+              </label>
+            </Field>
           </div>
           <TA label="ملاحظات إضافية" value={form.notes} onChange={v=>f('notes',v)} placeholder="معلومات إضافية عن المريض..."/>
           <div className="form-group" style={{marginTop:10}}>
@@ -3717,7 +3722,7 @@ function SessionModal({patientId, patient, session, onClose}){
 // APPOINTMENT MODAL
 // ══════════════════════════════════════════════════
 function AppointmentModal({patientId, patient, appointment, onClose}){
-  const {addAppointment, updateAppointment, patients, staff, settings} = useClinic();
+  const {addAppointment, updateAppointment, patients, staff, settings, categories} = useClinic();
   const isEdit = !!appointment;
   const [form,setForm] = useState(appointment||{
     patientId:patientId||'', patientName:patient?.name||'',
@@ -3732,6 +3737,7 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
   const save=()=>{
     if(!form.date||!form.time){alert('التاريخ والوقت مطلوبان');return;}
     if(!form.patientId){alert('المريض مطلوب');return;}
+    if(!form.service){alert('⚠️ يجب اختيار نوع الخدمة قبل حفظ الموعد.');return;}
     const p = patients.find(x=>x.id===form.patientId);
     const data={...form,patientName:p?.name||form.patientName,therapist:form.therapist||(p&&p.assignedTherapist)||settings.therapistName};
     if(isEdit) updateAppointment(appointment.id,data); else addAppointment({...data,id:nextId('APT')});
@@ -3754,7 +3760,8 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
             <TF label="التاريخ" type="date" value={form.date} onChange={v=>f('date',v)}/>
             <TF label="الوقت" type="time" value={form.time} onChange={v=>f('time',v)}/>
           </div>
-          <TF label="الخدمة / نوع الموعد" value={form.service} onChange={v=>f('service',v)} placeholder="مثال: جلسة علاج طبيعي"/>
+          <SF label="نوع الخدمة *" value={form.service} onChange={v=>f('service',v)}
+              options={[{value:'',label:'— اختر نوع الخدمة —'}, ...categories.sessionTypes.map(s=>({value:s.label,label:s.label}))]}/>
           <div className="form-row">
             <StaffSelect label="المعالج" value={form.therapist} onChange={v=>f('therapist',v)}/>
             <SF label="الحالة" value={form.status} onChange={v=>f('status',v)} options={['confirmed','pending','completed','cancelled','missed']}/>
@@ -4722,7 +4729,7 @@ ${forPrint?'<div class="noprint" style="text-align:center;margin:18px"><button o
 // CALENDAR
 // ══════════════════════════════════════════════════
 function CalendarPage(){
-  const {appointments, patients, staff, settings, updateSettings} = useClinic();
+  const {appointments, patients, staff, settings, updateSettings, sessions} = useClinic();
   const [month,setMonth] = useState(new Date());
   const [modal,setModal] = useState(null);
   const [view,setView] = useState('month'); // month | week
@@ -4753,6 +4760,31 @@ function CalendarPage(){
   const apptTher = (a)=> canonTher(a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || 'غير محدد');
   const therapists = (staff||[]).filter(s=>s.status!=='متوقف' && s.name).map(s=>s.name);
   const shown = (a)=> !filterTherapist || apptTher(a)===filterTherapist;
+
+  // — مواعيد مُلغاة قادمة بحاجة لبديل: نقترح مرضى من «قائمة الانتظار» أو ممن تأخر موعدهم —
+  const upcomingCancelled = appointments.filter(a=>a.status==='cancelled' && a.date>=today()).sort((a,b)=>a.date.localeCompare(b.date)||(a.time||'').localeCompare(b.time||''));
+  const lastSessionOf = {};
+  (sessions||[]).forEach(s=>{ if(s.patientId && (!lastSessionOf[s.patientId] || s.date>lastSessionOf[s.patientId])) lastSessionOf[s.patientId]=s.date; });
+  const hasFutureApt = new Set(appointments.filter(x=>x.date>=today() && x.status!=='cancelled').map(x=>x.patientId));
+  const suggestFor = (apt) => {
+    const ther = apptTher(apt);
+    const bookedOnDate = new Set(appointments.filter(x=>x.date===apt.date && x.status!=='cancelled').map(x=>x.patientId));
+    const pool = patients.filter(p=>p.status==='نشط' && p.id!==apt.patientId && !bookedOnDate.has(p.id));
+    const sameTher = (p)=> !p.assignedTherapist || p.assignedTherapist===ther;
+    let list = pool.filter(p=>p.waiting && sameTher(p));
+    if(list.length===0) list = pool.filter(p=>p.waiting);
+    if(list.length<3){
+      const fallback = pool.filter(p=>!list.includes(p) && !hasFutureApt.has(p.id) && sameTher(p))
+        .sort((a,b)=>(lastSessionOf[a.id]||'').localeCompare(lastSessionOf[b.id]||''));
+      list = [...list, ...fallback];
+    }
+    return list.slice(0,3);
+  };
+  const offerSlot = (apt,p) => {
+    let ph=(p.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
+    const msg=`مرحباً ${p.name} 🌿\nتم إلغاء موعد يوم ${apt.date} الساعة ${apt.time} مع د. ${apptTher(apt)} في ${settings.clinicName||'Motion Clinic'}.\nإذا كنت ترغب بأخذ هذا الموعد، يرجى التواصل معنا للتأكيد. 🌸`;
+    window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg),'_blank');
+  };
 
   // — أيام الأسبوع الحالي (يبدأ بالأحد) —
   const weekStart = new Date(weekRef); weekStart.setDate(weekRef.getDate()-weekRef.getDay()); weekStart.setHours(0,0,0,0);
@@ -4788,6 +4820,36 @@ function CalendarPage(){
               )}
             </span>
           ); })}
+        </div>
+      )}
+      {upcomingCancelled.length>0 && (
+        <div className="card" style={{marginBottom:16,borderTop:'3px solid var(--red)'}}>
+          <div className="card-header"><h3 className="card-title">🔁 مواعيد ملغاة بحاجة لبديل ({upcomingCancelled.length})</h3></div>
+          <div className="card-body">
+            {upcomingCancelled.map(apt=>{
+              const sugg = suggestFor(apt);
+              return(
+                <div key={apt.id} style={{border:'1px solid var(--border)',borderRadius:10,padding:'12px 14px',marginBottom:10}}>
+                  <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:sugg.length?10:0}}>
+                    <span className="badge badge-red">❌ {apt.date} — {apt.time}</span>
+                    <strong>{pname(apt)}</strong>
+                    <span style={{color:'var(--text-light)',fontSize:12.5}}>د. {apptTher(apt)}</span>
+                  </div>
+                  {sugg.length>0 ? (
+                    <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                      {sugg.map(p=>(
+                        <div key={p.id} style={{display:'flex',alignItems:'center',gap:6,background:'var(--surface)',borderRadius:20,padding:'4px 6px 4px 12px',fontSize:12.5,fontWeight:700}}>
+                          {p.waiting && <span title="في قائمة الانتظار">⏳</span>}
+                          <span>{p.name}</span>
+                          <button className="btn btn-sm btn-accent" style={{padding:'3px 10px'}} onClick={()=>offerSlot(apt,p)}>📱 عرض الموعد</button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <div style={{fontSize:12.5,color:'var(--text-light)'}}>لا توجد اقتراحات حالياً — أضِف مرضى لقائمة الانتظار من ملف المريض.</div>}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
       {view==='week' && (
@@ -5991,7 +6053,7 @@ function HEPLibraryPage({navigate}){
     let m='🏥 *Motion Clinic — عيادة الحركة*\n━━━━━━━━━━━━━━━━━━\n';
     if(selP)m+='👤 *المريض:* '+selP.name+'\n';
     if(sessionNote)m+='📋 *'+sessionNote+'*\n';
-    m+='📅 *التاريخ:* '+now+'\n👨‍⚕️ *المعالج:* '+(settings.therapistName||'د. يامن شحادة')+'\n';
+    m+='📅 *التاريخ:* '+now+'\n👨‍⚕️ *المعالج:* '+(settings.therapistName||'د. يامن نزية')+'\n';
     m+='━━━━━━━━━━━━━━━━━━\n\n🏋️ *برنامج التمارين ('+items.length+' تمارين):*\n\n';
     items.forEach((item,i)=>{
       m+='*'+(i+1)+'. '+item.ex.name+'* ('+item.ex.eng+')\n';
@@ -6610,17 +6672,41 @@ function StaffPage(){
 }
 
 function StaffModal({staff, onClose}){
-  const {addStaff, updateStaff, staff:allStaff} = useClinic();
+  const {addStaff, updateStaff, staff:allStaff, showToast,
+         patients, updatePatient, appointments, updateAppointment, sessions, updateSession,
+         records, updateRecord, inbody, updateInbody, tasks, updateTask, attendance, updateAttendance} = useClinic();
   const isEdit = !!staff;
   const [form,setForm] = useState(staff||{name:'',role:'معالج',specialty:'',phone:'',email:'',status:'نشط'});
+  const [busy,setBusy] = useState(false);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const clash = (allStaff||[]).find(s=>s.id!==(staff&&staff.id) && normName(s.name)===normName(form.name));
-  const save=()=>{
+  // إعادة تسمية موظف موجود: ينقل كل الإشارات القديمة (مواعيد/جلسات/سجلات/InBody/مهام/حضور/مرضى) للاسم الجديد تلقائياً
+  const renameEverywhere = async (oldName,newName,staffId) => {
+    const hit=(v)=>v && normName(v)===normName(oldName);
+    setBusy(true);
+    try{
+      for(const p of patients)         if(hit(p.assignedTherapist)) await updatePatient(p.id,{...p, assignedTherapist:newName});
+      for(const a of appointments)     if(hit(a.therapist))         await updateAppointment(a.id,{...a, therapist:newName});
+      for(const s of sessions)         if(hit(s.therapistName))     await updateSession(s.id,{...s, therapistName:newName});
+      for(const r of records)          if(hit(r.therapistName))     await updateRecord(r.id,{...r, therapistName:newName});
+      for(const b of (inbody||[]))     if(hit(b.therapistName))     await updateInbody(b.id,{...b, therapistName:newName});
+      for(const t of (tasks||[]))      if(hit(t.staffName))         await updateTask(t.id,{...t, staffName:newName});
+      for(const t of (attendance||[])) if(hit(t.staffName))         await updateAttendance(t.id,{...t, staffName:newName, staffId});
+      showToast(`✅ تم تحديث كل المراجع من «${oldName}» إلى «${newName}»`);
+    }catch(e){ showToast('تعذّر تحديث بعض المراجع: '+e.message,'error'); }
+    setBusy(false);
+  };
+  const save=async()=>{
     const name = String(form.name||'').trim();
     if(!name){alert('الاسم مطلوب');return;}
     if(clash && !confirm(`يوجد موظف بنفس الاسم «${clash.name}» (${clash.id}).\nالحفظ سينشئ تكراراً — يُفضّل تعديل السجل الموجود.\n\nمتابعة رغم ذلك؟`)) return;
     const data = {...form, name};
-    if(isEdit) updateStaff(staff.id,data); else addStaff({...data,id:nextId('STAFF')});
+    const oldName = isEdit ? String(staff.name||'').trim() : '';
+    const renamed = isEdit && oldName && normName(oldName)!==normName(name);
+    if(isEdit) await updateStaff(staff.id,data); else await addStaff({...data,id:nextId('STAFF')});
+    if(renamed && confirm(`تم تغيير الاسم من «${oldName}» إلى «${name}».\n\nهل تريد تحديث كل المواعيد والجلسات والسجلات القديمة المرتبطة بالاسم القديم تلقائياً؟`)){
+      await renameEverywhere(oldName, name, staff.id);
+    }
     onClose();
   };
   return(
@@ -6633,7 +6719,7 @@ function StaffModal({staff, onClose}){
           <div className="form-row"><TF label="التخصص" value={form.specialty} onChange={v=>f('specialty',v)}/><TF label="الهاتف" value={form.phone} onChange={v=>f('phone',v)}/></div>
           <div className="form-row"><TF label="البريد الإلكتروني" value={form.email} onChange={v=>f('email',v)}/><SF label="الحالة" value={form.status} onChange={v=>f('status',v)} options={['نشط','متوقف']}/></div>
         </div>
-        <div className="modal-footer"><button className="btn btn-ghost" onClick={onClose}>إلغاء</button><div style={{flex:1}}/><button className="btn btn-accent" onClick={save}>💾 حفظ</button></div>
+        <div className="modal-footer"><button className="btn btn-ghost" onClick={onClose} disabled={busy}>إلغاء</button><div style={{flex:1}}/><button className="btn btn-accent" onClick={save} disabled={busy}>{busy?'⏳ جاري التحديث...':'💾 حفظ'}</button></div>
       </div>
     </div>
   );
@@ -7660,13 +7746,13 @@ select 'Motion Clinic tables created successfully! ✅' as result;`}
 // MOTION AI — المساعد الذكي المتكامل
 // ══════════════════════════════════════════════════
 const MOTION_AI_SYSTEM = `أنت MOTION AI — المساعد الذكي المتكامل لعيادة Motion Clinic في دمشق، سوريا.
-تم تصميمك خصيصاً من قِبل د. يامن شحادة للعمل كمساعد طبي وإداري واستشاري متخصص في العلاج الفيزيائي وإعادة التأهيل.
+تم تصميمك خصيصاً من قِبل د. يامن نزية للعمل كمساعد طبي وإداري واستشاري متخصص في العلاج الفيزيائي وإعادة التأهيل.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🏥 هوية العيادة
 ━━━━━━━━━━━━━━━━━━━━━━━━
 الاسم: Motion Clinic — عيادة الحركة | الموقع: دمشق، سوريا
-المؤسس: د. يامن شحادة | معالج فيزيائي متخصص
+المؤسس: د. يامن نزية | معالج فيزيائي متخصص
 التخصصات: علاج فيزيائي، تأهيل رياضي، تأهيل عصبي، تغذية علاجية، InBody
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
