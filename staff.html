@@ -397,7 +397,7 @@ select.input{cursor:pointer;}
 /* ── Alert ── */
 .alert{padding:12px 16px;border-radius:10px;display:flex;align-items:flex-start;gap:10px;font-size:13px;}
 .alert-warning{background:#fffbeb;border:1px solid #fcd34d;color:#92400e;}
-.alert-danger{background:var(--red-light);border:1px solid #fca5a5;color:#991b1b;}
+.alert-danger,.alert-error{background:var(--red-light);border:1px solid #fca5a5;color:#991b1b;}
 .alert-success{background:var(--green-light);border:1px solid #6ee7b7;color:#065f46;}
 .alert-info{background:var(--blue-light);border:1px solid #93c5fd;color:#1e40af;}
 
@@ -470,6 +470,28 @@ async function aiAuthHeader(){
     const tok = data && data.session && data.session.access_token;
     return tok ? ('Bearer ' + tok) : ('Bearer ' + SUPABASE_KEY);
   }catch(e){ return 'Bearer ' + SUPABASE_KEY; }
+}
+
+// ── عمليات المدير على الحسابات (إنشاء/توثيق/كلمة مرور) عبر Edge Function admin-users ──
+async function adminUsersCall(action, payload){
+  let resp;
+  try{
+    resp = await fetch(SUPABASE_URL + '/functions/v1/admin-users', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization': await aiAuthHeader(),'apikey': SUPABASE_KEY},
+      body: JSON.stringify({action, ...(payload||{})}),
+    });
+  }catch(e){ throw new Error('تعذّر الاتصال بدالة إدارة الحسابات — تأكد من نشرها (supabase functions deploy admin-users)'); }
+  if(resp.status===404) throw new Error('دالة admin-users غير منشورة بعد — نفّذ: supabase functions deploy admin-users');
+  let data = {};
+  try{ data = await resp.json(); }catch(e){}
+  if(!resp.ok || data.error) throw new Error(data.error || ('خطأ ' + resp.status));
+  return data;
+}
+function genPassword(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const a = new Uint32Array(10); crypto.getRandomValues(a);
+  return Array.from(a, n => chars[n % chars.length]).join('');
 }
 
 // ── وضع الموظفين (STAFF_MODE) — يُفعَّل في ملف staff.html المعزول ──
@@ -745,6 +767,7 @@ const TABLE_MAP = {
   hepLib: 'mc_hep',
   attendance: 'mc_attendance',
   tasks: 'mc_tasks',
+  services: 'mc_services',
 };
 
 // ══════════════════════════════════════════════════
@@ -1150,6 +1173,7 @@ function ClinicProvider({ children }) {
   const [hepLib,      setHepLib]     = useState(() => ls('mc6_hep',         []));
   const [attendance,  setAttendance] = useState(() => ls('mc6_attendance',  []));
   const [tasks,       setTasks]      = useState(() => ls('mc6_tasks',       []));
+  const [services,    setServices]   = useState(() => ls('mc6_services',    DEF_SERVICES));
   const [audit,       setAudit]      = useState(() => ls('mc6_audit',       DEF_AUDIT));
   const [toast,       setToast]      = useState(null);
   const [syncStatus,  setSyncStatus] = useState('idle'); // idle | syncing | online | offline | error
@@ -1176,6 +1200,7 @@ function ClinicProvider({ children }) {
   useEffect(()=>{persistKV('mc6_hep',         hepLib);},     [hepLib]);
   useEffect(()=>{persistKV('mc6_attendance',  attendance);}, [attendance]);
   useEffect(()=>{persistKV('mc6_tasks',       tasks);},      [tasks]);
+  useEffect(()=>{persistKV('mc6_services',    services);},   [services]);
   useEffect(()=>{persistKV('mc6_audit',       audit);},      [audit]);
   useEffect(()=>{persistKV('mc6_last_sync',   lastSync);},   [lastSync]);
 
@@ -1184,7 +1209,7 @@ function ClinicProvider({ children }) {
   useEffect(()=>{
     if(_hydratedRef.current) return; _hydratedRef.current=true;
     (async()=>{
-      const map={ mc6_patients:setPatients, mc6_records:setRecords, mc6_sessions:setSessions, mc6_appointments:setApts, mc6_finance:setFinance, mc6_expenses:setExpenses, mc6_inbody:setInbody, mc6_notes:setNotes, mc6_staff:setStaff, mc6_inventory:setInventory, mc6_hep:setHepLib, mc6_attendance:setAttendance, mc6_tasks:setTasks };
+      const map={ mc6_patients:setPatients, mc6_records:setRecords, mc6_sessions:setSessions, mc6_appointments:setApts, mc6_finance:setFinance, mc6_expenses:setExpenses, mc6_inbody:setInbody, mc6_notes:setNotes, mc6_staff:setStaff, mc6_inventory:setInventory, mc6_hep:setHepLib, mc6_attendance:setAttendance, mc6_tasks:setTasks, mc6_services:setServices };
       // ⚠️ لا نستبدل الحالة الحالية أبداً — قد يكون السحب من السحابة قد سبقنا
       // (سباق قديم كان يستبدل بيانات السحابة الطازجة بنسخة محلية قديمة → بيانات ناقصة).
       // ندمج بالمعرّف مع ترجيح الأحدث (LWW).
@@ -1344,7 +1369,7 @@ function ClinicProvider({ children }) {
         mc_appointments: setApts, mc_finance: setFinance, mc_expenses: setExpenses,
         mc_inbody: setInbody, mc_notes: setNotes, mc_staff: setStaff,
         mc_inventory: setInventory, mc_hep: setHepLib,
-        mc_attendance: setAttendance, mc_tasks: setTasks,
+        mc_attendance: setAttendance, mc_tasks: setTasks, mc_services: setServices,
       };
       const pullErrs = [];
       await Promise.all(
@@ -1431,6 +1456,7 @@ function ClinicProvider({ children }) {
       mc_hep:          setHepLib,
       mc_attendance:   setAttendance,
       mc_tasks:        setTasks,
+      mc_services:     setServices,
     };
 
     // معالج التغييرات الواردة من Supabase Realtime
@@ -1585,6 +1611,7 @@ function ClinicProvider({ children }) {
   const hepCRUD  = CRUD(setHepLib,    'HEP',    'mc_hep');
   const attCRUD  = CRUD(setAttendance,'ATT',    'mc_attendance');
   const taskCRUD = CRUD(setTasks,     'TSK',    'mc_tasks');
+  const svcCRUD  = CRUD(setServices,  'SV',     'mc_services');
 
   // Categories CRUD
   const addCatItem = (grp, label) => {
@@ -1626,7 +1653,7 @@ function ClinicProvider({ children }) {
   const backupDue = backupAgeDays === null || backupAgeDays >= 7;
 
   // Backup/Restore
-  const backupPayload = () => ({settings,categories,patients,records,sessions,appointments,finance,expenses,inbody,notes,staff,inventory,hepLib,attendance,tasks,audit,v:'6',ts:new Date().toISOString()});
+  const backupPayload = () => ({settings,categories,patients,records,sessions,appointments,finance,expenses,inbody,notes,staff,inventory,hepLib,attendance,tasks,services,audit,v:'6',ts:new Date().toISOString()});
 
   const exportBackup = () => {
     const blob = new Blob([JSON.stringify(backupPayload(),null,2)],{type:'application/json'});
@@ -1726,6 +1753,7 @@ function ClinicProvider({ children }) {
     if(d.hepLib)      setHepLib(d.hepLib);
     if(d.attendance)  setAttendance(d.attendance);
     if(d.tasks)       setTasks(d.tasks);
+    if(d.services)    setServices(d.services);
     showToast('تم استيراد البيانات بنجاح ✓');
   };
 
@@ -1777,7 +1805,7 @@ function ClinicProvider({ children }) {
       ['mc_appointments', appointments], ['mc_finance', finance], ['mc_expenses', expenses],
       ['mc_inbody', inbody], ['mc_notes', notes], ['mc_staff', staff],
       ['mc_inventory', inventory], ['mc_hep', hepLib],
-      ['mc_attendance', attendance], ['mc_tasks', tasks],
+      ['mc_attendance', attendance], ['mc_tasks', tasks], ['mc_services', services],
     ];
     setSyncStatus('syncing');
     let ok = 0, bad = 0, lastErr = '';
@@ -1793,7 +1821,7 @@ function ClinicProvider({ children }) {
     setSyncStatus(bad ? 'error' : 'online');
     if (!bad) setLastSync(new Date().toISOString());
     showToast(bad ? `رُفع ${ok} سجلاً · فشل ${bad}` : `☁️ رُفع ${ok} سجلاً إلى السحابة ✓`, bad ? 'error' : 'success');
-  }, [patients, records, sessions, appointments, finance, expenses, inbody, notes, staff, inventory, hepLib, attendance, tasks, settings, categories]);
+  }, [patients, records, sessions, appointments, finance, expenses, inbody, notes, staff, inventory, hepLib, attendance, tasks, services, settings, categories]);
 
   const resetSystem = () => {
     // إعادة ضبط محلية فقط — تُفرّغ كل السجلات وتُبقي الإعدادات والتصنيفات الافتراضية.
@@ -1802,6 +1830,7 @@ function ClinicProvider({ children }) {
     setApts([]); setFinance([]); setExpenses([]);
     setInbody([]); setNotes([]); setStaff([]);
     setInventory([]); setHepLib([]); setAttendance([]); setTasks([]); setAudit([]);
+    setServices(DEF_SERVICES);
   };
 
   // ── نسخ احتياطي تلقائي محلي (لقطات) ──
@@ -1837,7 +1866,7 @@ function ClinicProvider({ children }) {
 
   const value = {
     settings, categories, patients, records, sessions, appointments, finance, expenses,
-    inbody, notes, staff, inventory, hepLib, attendance, tasks, audit, toast, showToast,
+    inbody, notes, staff, inventory, hepLib, attendance, tasks, services, audit, toast, showToast,
     // Sync state
     syncStatus, lastSync, pendingCount, syncError, pullFromSupabase, flushPending, pushAllToCloud,
     failedCount, retryFailedOps,
@@ -1867,6 +1896,8 @@ function ClinicProvider({ children }) {
     addAttendance:attCRUD.add, updateAttendance:attCRUD.update, deleteAttendance:attCRUD.delete,
     // Tasks CRUD
     addTask:taskCRUD.add, updateTask:taskCRUD.update, deleteTask:taskCRUD.delete,
+    // Services CRUD (الخدمات والأسعار)
+    addService:svcCRUD.add, updateService:svcCRUD.update, deleteService:svcCRUD.delete,
     // Categories
     addCatItem, updateCatItem, deleteCatItem, addCatGroup, deleteCatGroup,
     // Settings
@@ -2056,7 +2087,7 @@ function ReminderTemplateModal({value, vars, onSave, onClose}){
 }
 
 function Dashboard({navigate}){
-  const {patients,appointments,records,sessions,finance,expenses,inventory,inbody,settings,updateAppointment,updateSettings} = useClinic();
+  const {patients,appointments,records,sessions,finance,expenses,inventory,inbody,settings,services,updateAppointment,updateSettings} = useClinic();
   const [editReminder,setEditReminder] = useState(false);
   const [previewApt,setPreviewApt] = useState(null);
   const todayStr = today();
@@ -2083,7 +2114,13 @@ function Dashboard({navigate}){
     .map(p=>({...p, last:lastSesMap[p.id], days:Math.floor((Date.now()-new Date(lastSesMap[p.id]).getTime())/dayMs)}))
     .sort((a,b)=>b.days-a.days);
   const lapsed = lapsedList.length;
-  const markAtt = (a, status) => updateAppointment(a.id, {...a, status});
+  const markAtt = (a, status) => {
+    if(status==='completed' && canSeeFinance()){
+      const svc = (services||[]).find(s=>s.name===a.service);
+      if(svc && svc.price>0) alert(`💰 تذكير: سعر «${svc.name}» المحدد في الخدمات والأسعار هو ${fmt(svc.price)} ${cur}. تأكد من تسجيل الدفعة المطابقة.`);
+    }
+    updateAppointment(a.id, {...a, status});
+  };
   const remindApt = (a) => {
     const p = patients.find(x=>String(x.id)===String(a.patientId)) || {};
     let ph=(p.phone||a.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
@@ -2260,6 +2297,27 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
           </div>
         </div>
       </div>
+
+      {canSeeFinance() && (()=>{
+        const d = new Date(); const day = d.getDate();
+        const lastDay = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+        let ym = null, lbl = '';
+        if(day >= lastDay-2){ ym = todayStr.slice(0,7); lbl = 'الشهر الحالي'; }
+        else if(day <= 5){ const p = new Date(d.getFullYear(), d.getMonth()-1, 1); ym = p.getFullYear()+'-'+String(p.getMonth()+1).padStart(2,'0'); lbl = 'الشهر الماضي'; }
+        if(!ym) return null;
+        return (
+          <div className="card" style={{marginTop:20,borderTop:'3px solid var(--accent)'}}>
+            <div className="card-body" style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+              <span style={{fontSize:26}}>📆</span>
+              <div style={{flex:1,minWidth:200}}>
+                <div style={{fontWeight:800}}>تقرير نهاية الشهر جاهز — {lbl} ({ym})</div>
+                <div style={{fontSize:12.5,color:'var(--text-light)'}}>التقرير الكامل حسب نوع الخدمة: الجلسات، المواعيد، المتوقع مقابل المحصّل، والمعالجون.</div>
+              </div>
+              <button className="btn btn-accent" onClick={()=>{ try{ localStorage.setItem('mc_open_month_report', ym); }catch(e){} navigate('finance'); }}>📊 عرض التقرير</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {tomorrowApts.length>0 && (
         <div className="card" style={{marginTop:20,borderTop:'3px solid #0891b2'}}>
@@ -3622,7 +3680,7 @@ function RecordModal({patientId,record,onClose}){
 // SESSION MODAL — متابعة الجلسات
 // ══════════════════════════════════════════════════
 function SessionModal({patientId, patient, session, onClose}){
-  const {addSession, updateSession, categories, settings} = useClinic();
+  const {addSession, updateSession, categories, settings, services} = useClinic();
   const isEdit = !!session;
   const [form,setForm] = useState(session||{
     patientId, date:today(), type:'',
@@ -3652,6 +3710,13 @@ function SessionModal({patientId, patient, session, onClose}){
 
   const save=()=>{
     if(!form.type){ alert('⚠️ يجب اختيار نوع الخدمة قبل حفظ الجلسة.'); return; }
+    if(canSeeFinance() && !form.isFree){
+      const svc = (services||[]).find(s=>s.name===form.type);
+      if(svc && svc.price>0 && Number(form.paid||0)!==Number(svc.price)){
+        const cur = settings.currency||'';
+        if(!confirm(`💰 تذكير: سعر «${svc.name}» في الخدمات والأسعار هو ${fmt(svc.price)} ${cur}، بينما المسجَّل هنا ${fmt(form.paid||0)} ${cur}.\n\nمتابعة الحفظ بالقيمة الحالية؟`)) return;
+      }
+    }
     if(isEdit) updateSession(session.id,form); else addSession({...form,id:nextId('SS')});
     onClose();
   };
@@ -3666,8 +3731,8 @@ function SessionModal({patientId, patient, session, onClose}){
         <div className="modal-body">
           <div className="form-row">
             <TF label="تاريخ الجلسة" type="date" value={form.date} onChange={v=>f('date',v)}/>
-            <SF label="نوع الخدمة *" value={form.type} onChange={v=>f('type',v)}
-                options={[{value:'',label:'— اختر نوع الخدمة —'}, ...categories.sessionTypes.map(s=>({value:s.label,label:s.label}))]}/>
+            <SF label="نوع الخدمة *" value={form.type} onChange={v=>{f('type',v); const svc=(services||[]).find(s=>s.name===v); if(svc && !isEdit) f('paid', svc.price||0);}}
+                options={[{value:'',label:'— اختر نوع الخدمة —'}, ...(services||[]).filter(s=>s.active).map(s=>({value:s.name,label:s.name}))]}/>
           </div>
           <div className="form-row">
             <TF label="مدة الجلسة (دقيقة)" type="number" value={form.duration} onChange={v=>f('duration',+v)}/>
@@ -3703,7 +3768,7 @@ function SessionModal({patientId, patient, session, onClose}){
           )}
           {canSeeFinance() && (
             <label style={{display:'flex',alignItems:'center',gap:8,marginTop:-4,marginBottom:10,fontSize:13.5,fontWeight:700,color:form.isFree?'var(--orange)':'var(--text-mid)',cursor:'pointer'}}>
-              <input type="checkbox" checked={!!form.isFree} onChange={e=>f('isFree',e.target.checked)} style={{width:17,height:17,accentColor:'#d97706',cursor:'pointer'}}/>
+              <input type="checkbox" checked={!!form.isFree} onChange={e=>{ const on=e.target.checked; f('isFree',on); if(on) f('paid',0); else { const svc=(services||[]).find(s=>s.name===form.type); if(svc && !Number(form.paid)) f('paid', svc.price||0); } }} style={{width:17,height:17,accentColor:'#d97706',cursor:'pointer'}}/>
               🆓 جلسة مجانية (بدون مقابل مادي)
             </label>
           )}
@@ -3723,7 +3788,7 @@ function SessionModal({patientId, patient, session, onClose}){
 // APPOINTMENT MODAL
 // ══════════════════════════════════════════════════
 function AppointmentModal({patientId, patient, appointment, onClose}){
-  const {addAppointment, updateAppointment, patients, staff, settings, categories} = useClinic();
+  const {addAppointment, updateAppointment, patients, staff, settings, categories, services} = useClinic();
   const isEdit = !!appointment;
   const [form,setForm] = useState(appointment||{
     patientId:patientId||'', patientName:patient?.name||'',
@@ -3739,6 +3804,10 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
     if(!form.date||!form.time){alert('التاريخ والوقت مطلوبان');return;}
     if(!form.patientId){alert('المريض مطلوب');return;}
     if(!form.service){alert('⚠️ يجب اختيار نوع الخدمة قبل حفظ الموعد.');return;}
+    if(canSeeFinance() && form.status==='completed'){
+      const svc = (services||[]).find(s=>s.name===form.service);
+      if(svc && svc.price>0) alert(`💰 تذكير: سعر «${svc.name}» المحدد في الخدمات والأسعار هو ${fmt(svc.price)} ${settings.currency}. تأكد من تسجيل الدفعة المطابقة.`);
+    }
     const p = patients.find(x=>x.id===form.patientId);
     const data={...form,patientName:p?.name||form.patientName,therapist:form.therapist||(p&&p.assignedTherapist)||settings.therapistName};
     if(isEdit) updateAppointment(appointment.id,data); else addAppointment({...data,id:nextId('APT')});
@@ -3762,7 +3831,7 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
             <TF label="الوقت" type="time" value={form.time} onChange={v=>f('time',v)}/>
           </div>
           <SF label="نوع الخدمة *" value={form.service} onChange={v=>f('service',v)}
-              options={[{value:'',label:'— اختر نوع الخدمة —'}, ...categories.sessionTypes.map(s=>({value:s.label,label:s.label}))]}/>
+              options={[{value:'',label:'— اختر نوع الخدمة —'}, ...(services||[]).filter(s=>s.active).map(s=>({value:s.name,label:s.name}))]}/>
           <div className="form-row">
             <StaffSelect label="المعالج" value={form.therapist} onChange={v=>f('therapist',v)}/>
             <SF label="الحالة" value={form.status} onChange={v=>f('status',v)} options={['confirmed','pending','completed','cancelled','missed']}/>
@@ -4730,9 +4799,10 @@ ${forPrint?'<div class="noprint" style="text-align:center;margin:18px"><button o
 // CALENDAR
 // ══════════════════════════════════════════════════
 function CalendarPage(){
-  const {appointments, patients, staff, settings, updateSettings, sessions} = useClinic();
+  const {appointments, patients, staff, settings, updateSettings, sessions, addAppointment, updateAppointment, updatePatient} = useClinic();
   const [month,setMonth] = useState(new Date());
   const [modal,setModal] = useState(null);
+  const [pickFor,setPickFor] = useState(null);   // الموعد الملغى المفتوح في نافذة اختيار البديل
   const [view,setView] = useState('month'); // month | week
   const [weekRef,setWeekRef] = useState(new Date());
   const [filterTherapist,setFilterTherapist] = useState('');
@@ -4763,7 +4833,7 @@ function CalendarPage(){
   const shown = (a)=> !filterTherapist || apptTher(a)===filterTherapist;
 
   // — مواعيد مُلغاة قادمة بحاجة لبديل: نقترح مرضى من «قائمة الانتظار» أو ممن تأخر موعدهم —
-  const upcomingCancelled = appointments.filter(a=>a.status==='cancelled' && a.date>=today()).sort((a,b)=>a.date.localeCompare(b.date)||(a.time||'').localeCompare(b.time||''));
+  const upcomingCancelled = appointments.filter(a=>a.status==='cancelled' && a.date>=today() && !a.replacedBy && !a.slotHandled).sort((a,b)=>a.date.localeCompare(b.date)||(a.time||'').localeCompare(b.time||''));
   const lastSessionOf = {};
   (sessions||[]).forEach(s=>{ if(s.patientId && (!lastSessionOf[s.patientId] || s.date>lastSessionOf[s.patientId])) lastSessionOf[s.patientId]=s.date; });
   const hasFutureApt = new Set(appointments.filter(x=>x.date>=today() && x.status!=='cancelled').map(x=>x.patientId));
@@ -4779,12 +4849,45 @@ function CalendarPage(){
         .sort((a,b)=>(lastSessionOf[a.id]||'').localeCompare(lastSessionOf[b.id]||''));
       list = [...list, ...fallback];
     }
-    return list.slice(0,3);
+    return list.slice(0,5);
+  };
+  const waPhone = (p) => { let ph=(p.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1); return ph; };
+  const markOffered = (apt,p) => {
+    const offered = Array.isArray(apt.offeredTo) ? apt.offeredTo : [];
+    if(!offered.includes(p.id)) updateAppointment(apt.id,{...apt, offeredTo:[...offered, p.id]});
   };
   const offerSlot = (apt,p) => {
-    let ph=(p.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
-    const msg=`مرحباً ${p.name} 🌿\nتم إلغاء موعد يوم ${apt.date} الساعة ${apt.time} مع د. ${apptTher(apt)} في ${settings.clinicName||'Motion Clinic'}.\nإذا كنت ترغب بأخذ هذا الموعد، يرجى التواصل معنا للتأكيد. 🌸`;
+    const ph = waPhone(p);
+    if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
+    const msg=`مرحباً ${p.name} 🌿\nتوفّر موعد يوم ${apt.date} الساعة ${apt.time} مع د. ${apptTher(apt)} في ${settings.clinicName||'Motion Clinic'}.\nإذا كنت ترغب بأخذ هذا الموعد، يرجى الرد للتأكيد. 🌸`;
     window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg),'_blank');
+    markOffered(apt,p);
+  };
+  const callPatient = (apt,p) => {
+    if(!p.phone){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
+    window.location.href = 'tel:'+String(p.phone).replace(/[^0-9+]/g,'');
+    markOffered(apt,p);
+  };
+  // حجز مباشر: ينشئ موعداً جديداً للمريض البديل في نفس الوقت ويُغلق الموعد الملغى
+  const bookReplacement = (apt,p) => {
+    if(!confirm(`حجز موعد ${apt.date} الساعة ${apt.time} للمريض «${p.name}»؟`)) return;
+    const ther = apt.therapist || p.assignedTherapist || settings.therapistName;
+    const n = addAppointment({
+      id:nextId('APT'), patientId:p.id, patientName:p.name, date:apt.date, time:apt.time,
+      service:apt.service||'', therapist:ther, status:'confirmed',
+      notes:`بديل عن موعد ملغى (${pname(apt)})`,
+    });
+    updateAppointment(apt.id,{...apt, replacedBy:n.id});
+    if(p.waiting) updatePatient(p.id,{...p, waiting:false});
+    setPickFor(null);
+    const ph = waPhone(p);
+    if(ph && confirm('✅ تم الحجز. إرسال تأكيد للمريض عبر واتساب؟')){
+      const msg=`مرحباً ${p.name} 🌿\nتم تأكيد موعدك يوم ${apt.date} الساعة ${apt.time} مع د. ${ther} في ${settings.clinicName||'Motion Clinic'}.\nبانتظارك 🙏`;
+      window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg),'_blank');
+    }
+  };
+  const dismissSlot = (apt) => {
+    if(confirm('إخفاء هذا الموعد من قائمة «بحاجة لبديل» (لا حاجة لبديل)؟')) updateAppointment(apt.id,{...apt, slotHandled:true});
   };
 
   // — أيام الأسبوع الحالي (يبدأ بالأحد) —
@@ -4829,24 +4932,32 @@ function CalendarPage(){
           <div className="card-body">
             {upcomingCancelled.map(apt=>{
               const sugg = suggestFor(apt);
+              const offered = Array.isArray(apt.offeredTo) ? apt.offeredTo : [];
               return(
                 <div key={apt.id} style={{border:'1px solid var(--border)',borderRadius:10,padding:'12px 14px',marginBottom:10}}>
-                  <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:sugg.length?10:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:10}}>
                     <span className="badge badge-red">❌ {apt.date} — {apt.time}</span>
                     <strong>{pname(apt)}</strong>
-                    <span style={{color:'var(--text-light)',fontSize:12.5}}>د. {apptTher(apt)}</span>
+                    <span style={{color:'var(--text-light)',fontSize:12.5}}>د. {apptTher(apt)}{apt.service?' · '+apt.service:''}</span>
+                    {offered.length>0 && <span className="badge badge-blue">📞 تم التواصل مع {offered.length}</span>}
+                    <div style={{flex:1}}/>
+                    <button className="btn btn-sm btn-primary" onClick={()=>setPickFor(apt)}>🔍 اختيار بديل (كل الخيارات)</button>
+                    <button className="btn btn-sm btn-ghost" onClick={()=>dismissSlot(apt)} title="لا حاجة لبديل">✖ إخفاء</button>
                   </div>
                   {sugg.length>0 ? (
                     <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
                       {sugg.map(p=>(
-                        <div key={p.id} style={{display:'flex',alignItems:'center',gap:6,background:'var(--surface)',borderRadius:20,padding:'4px 6px 4px 12px',fontSize:12.5,fontWeight:700}}>
+                        <div key={p.id} style={{display:'flex',alignItems:'center',gap:5,background:'var(--surface)',borderRadius:20,padding:'4px 6px 4px 12px',fontSize:12.5,fontWeight:700}}>
                           {p.waiting && <span title="في قائمة الانتظار">⏳</span>}
+                          {offered.includes(p.id) && <span title="تم التواصل معه">✔️</span>}
                           <span>{p.name}</span>
-                          <button className="btn btn-sm btn-accent" style={{padding:'3px 10px'}} onClick={()=>offerSlot(apt,p)}>📱 عرض الموعد</button>
+                          <button className="btn btn-sm btn-accent" style={{padding:'3px 9px'}} onClick={()=>bookReplacement(apt,p)} title="حجز الموعد مباشرة لهذا المريض">✅ حجز</button>
+                          <button className="btn btn-sm btn-outline" style={{padding:'3px 8px'}} onClick={()=>offerSlot(apt,p)} title="عرض الموعد عبر واتساب">📱</button>
+                          <button className="btn btn-sm btn-outline" style={{padding:'3px 8px'}} onClick={()=>callPatient(apt,p)} title="اتصال">📞</button>
                         </div>
                       ))}
                     </div>
-                  ) : <div style={{fontSize:12.5,color:'var(--text-light)'}}>لا توجد اقتراحات حالياً — أضِف مرضى لقائمة الانتظار من ملف المريض.</div>}
+                  ) : <div style={{fontSize:12.5,color:'var(--text-light)'}}>لا توجد اقتراحات تلقائية — اضغط «🔍 اختيار بديل» للبحث في كل المرضى.</div>}
                 </div>
               );
             })}
@@ -4935,6 +5046,95 @@ function CalendarPage(){
       </div>
       )}
       {modal?.type==='apt'&&<AppointmentModal patientId={null} patient={null} appointment={modal.data} onClose={()=>setModal(null)}/>}
+      {pickFor && (
+        <ReplacementPicker apt={pickFor} patients={patients} appointments={appointments}
+          therapist={apptTher(pickFor)} pname={pname} lastSessionOf={lastSessionOf} hasFutureApt={hasFutureApt}
+          onBook={p=>bookReplacement(pickFor,p)} onWhatsApp={p=>offerSlot(pickFor,p)} onCall={p=>callPatient(pickFor,p)}
+          onClose={()=>setPickFor(null)}/>
+      )}
+    </div>
+  );
+}
+
+// ── نافذة اختيار مريض بديل لموعد ملغى: بحث + تصفية + حجز/واتساب/اتصال ──
+function ReplacementPicker({apt, patients, appointments, therapist, pname, lastSessionOf, hasFutureApt, onBook, onWhatsApp, onCall, onClose}){
+  const offered = Array.isArray(apt.offeredTo) ? apt.offeredTo : [];
+  const bookedOnDate = new Set(appointments.filter(x=>x.date===apt.date && x.status!=='cancelled').map(x=>x.patientId));
+  const others = patients.filter(p=>p.id!==apt.patientId);
+  const active = others.filter(p=>p.status==='نشط');
+  const sameTher = (p)=> normName(p.assignedTherapist||'')===normName(therapist);
+  const FILTERS = [
+    {k:'waiting', l:'⏳ قائمة الانتظار', f:p=>p.waiting && p.status==='نشط'},
+    {k:'same',    l:'🩺 مرضى نفس المعالج', f:p=>p.status==='نشط' && sameTher(p)},
+    {k:'nofuture',l:'💤 بلا موعد قادم', f:p=>p.status==='نشط' && !hasFutureApt.has(p.id)},
+    {k:'active',  l:'👥 كل المرضى النشطين', f:p=>p.status==='نشط'},
+    {k:'all',     l:'📋 كل المرضى', f:()=>true},
+  ];
+  const [filter,setFilter] = useState(active.some(p=>p.waiting) ? 'waiting' : 'same');
+  const [q,setQ] = useState('');
+  const fl = FILTERS.find(x=>x.k===filter) || FILTERS[0];
+  const qq = q.trim();
+  const list = others
+    .filter(p=> qq ? ((p.name||'').includes(qq) || (p.phone||'').includes(qq) || String(p.id).includes(qq)) : fl.f(p))
+    .sort((a,b)=> (b.waiting?1:0)-(a.waiting?1:0) || (lastSessionOf[a.id]||'').localeCompare(lastSessionOf[b.id]||''))
+    .slice(0,60);
+  const daysAgo = (d)=> d ? Math.floor((Date.now()-new Date(d).getTime())/86400000) : null;
+  return(
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-lg" onClick={e=>e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>🔁 اختيار بديل — {apt.date} الساعة {apt.time}</h2>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div style={{fontSize:13,color:'var(--text-mid)',marginBottom:10}}>
+            الموعد الملغى: <strong>{pname(apt)}</strong> · د. {therapist}{apt.service?' · '+apt.service:''}
+          </div>
+          <input className="input" placeholder="🔎 ابحث باسم المريض أو رقم الهاتف..." value={q} onChange={e=>setQ(e.target.value)} style={{width:'100%',marginBottom:10}}/>
+          {!qq && (
+            <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
+              {FILTERS.map(x=>{ const n = others.filter(x.f).length; return (
+                <button key={x.k} onClick={()=>setFilter(x.k)} className={`btn btn-sm ${filter===x.k?'btn-primary':'btn-ghost'}`}>{x.l} ({n})</button>
+              ); })}
+            </div>
+          )}
+          {list.length===0 ? (
+            <div className="empty-state" style={{padding:24}}><div className="icon">🔍</div><h3>لا يوجد مرضى في هذا الخيار</h3></div>
+          ) : (
+            <div style={{maxHeight:'52vh',overflowY:'auto',display:'flex',flexDirection:'column',gap:6}}>
+              {list.map(p=>{
+                const d = daysAgo(lastSessionOf[p.id]);
+                const busyDay = bookedOnDate.has(p.id);
+                return(
+                  <div key={p.id} style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',border:'1px solid var(--border)',borderRadius:10,padding:'8px 12px',background:offered.includes(p.id)?'var(--blue-light)':'#fff'}}>
+                    <div style={{flex:1,minWidth:180}}>
+                      <div style={{fontWeight:800,fontSize:13.5}}>
+                        {p.waiting && <span title="قائمة الانتظار">⏳ </span>}{p.name}
+                        {offered.includes(p.id) && <span className="badge badge-blue" style={{marginRight:6}}>✔️ تم التواصل</span>}
+                        {p.status!=='نشط' && <span className="badge badge-gray" style={{marginRight:6}}>{p.status||'—'}</span>}
+                      </div>
+                      <div style={{fontSize:11.5,color:'var(--text-light)'}}>
+                        <span dir="ltr">{p.phone||'بدون رقم'}</span>
+                        {p.assignedTherapist ? ' · '+p.assignedTherapist : ''}
+                        {' · '}{d===null ? 'لا جلسات سابقة' : `آخر جلسة قبل ${d} يوم`}
+                        {busyDay && <span style={{color:'var(--red)',fontWeight:700}}> · لديه موعد بنفس اليوم</span>}
+                      </div>
+                    </div>
+                    <button className="btn btn-sm btn-accent" disabled={busyDay} onClick={()=>onBook(p)}>✅ حجز</button>
+                    <button className="btn btn-sm btn-outline" disabled={!p.phone} onClick={()=>onWhatsApp(p)}>📱 واتساب</button>
+                    <button className="btn btn-sm btn-outline" disabled={!p.phone} onClick={()=>onCall(p)}>📞 اتصال</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <span style={{fontSize:12,color:'var(--text-light)'}}>«✅ حجز» ينشئ الموعد للمريض الجديد فوراً ويُخفي الموعد الملغى من القائمة.</span>
+          <div style={{flex:1}}/>
+          <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -4943,8 +5143,10 @@ function CalendarPage(){
 // FINANCE PAGE
 // ══════════════════════════════════════════════════
 function FinancePage({navigate}){
-  const {finance, expenses, patients, sessions, appointments, settings, deleteFinance, deleteExpense, addExpense, updateExpense} = useClinic();
-  const [tab,setTab] = useState('invoices');
+  const {finance, expenses, patients, sessions, appointments, settings, services, deleteFinance, deleteExpense, addExpense, updateExpense} = useClinic();
+  // فتح «تقرير الشهر» مباشرة عند القدوم من تذكير لوحة التحكم
+  const openMonth = (()=>{ try{ const v=localStorage.getItem('mc_open_month_report'); localStorage.removeItem('mc_open_month_report'); return v; }catch(e){ return null; } })();
+  const [tab,setTab] = useState(openMonth ? 'periodic' : 'invoices');
   const [modal,setModal] = useState(null);
   const [expModal,setExpModal] = useState(null);
   const [search,setSearch] = useState('');
@@ -5007,8 +5209,8 @@ function FinancePage({navigate}){
 
   // ═══ التقارير الدورية: يومي / أسبوعي / شهري ═══
   const isoD = (x)=>{ const m=x.getMonth()+1, dd=x.getDate(); return x.getFullYear()+'-'+(m<10?'0':'')+m+'-'+(dd<10?'0':'')+dd; };
-  const [rKind,setRKind]     = useState('daily');   // daily | weekly | monthly
-  const [rAnchor,setRAnchor] = useState(today());
+  const [rKind,setRKind]     = useState(openMonth ? 'monthly' : 'daily');   // daily | weekly | monthly
+  const [rAnchor,setRAnchor] = useState(openMonth ? openMonth+'-01' : today());
   const rRange = (()=>{
     const d = new Date(rAnchor+'T00:00:00');
     if(isNaN(d.getTime())) return {from:rAnchor,to:rAnchor,label:rAnchor};
@@ -5065,6 +5267,33 @@ function FinancePage({navigate}){
   const rExpRows   = Object.entries(rExpByCat).sort((a,b)=>b[1]-a[1]);
   const rKindLabel = {daily:'يومي', weekly:'أسبوعي', monthly:'شهري'}[rKind];
 
+  // ═══ التقرير حسب نوع الخدمة (مربوط بقسم 🛠️ الخدمات والأسعار) ═══
+  const svcPrice = Object.fromEntries((services||[]).map(s=>[s.name, Number(s.price)||0]));
+  const rSvc = {};
+  const svcRow = (k)=> rSvc[k] || (rSvc[k] = {name:k, ses:0, free:0, sesPaid:0, apt:0, done:0, lost:0, inv:0, invPaid:0, ther:{}});
+  rSes.forEach(s=>{
+    const r = svcRow(s.type||'غير محدد');
+    r.ses++; if(s.isFree) r.free++;
+    r.sesPaid += Number(s.paid)||0;
+    const t = s.therapistName||'غير محدد'; r.ther[t]=(r.ther[t]||0)+1;
+  });
+  rApt.forEach(a=>{
+    const r = svcRow(a.service||'غير محدد');
+    r.apt++;
+    if(a.status==='completed') r.done++;
+    if(a.status==='cancelled'||a.status==='missed') r.lost++;
+  });
+  rInv.forEach(f=>{ const r = svcRow(f.serviceLabel||'غير محدد'); r.inv++; r.invPaid += Number(f.paid)||0; });
+  const rSvcRows = Object.values(rSvc).map(r=>{
+    const price = svcPrice[r.name] || 0;
+    const expected = price * (r.ses - r.free);
+    return {...r, price, expected, diff: r.sesPaid - expected,
+      therTxt: Object.entries(r.ther).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} (${v})`).join('، ')};
+  }).sort((a,b)=> b.ses-a.ses || b.apt-a.apt);
+  const rSvcTot = rSvcRows.reduce((t,r)=>({ses:t.ses+r.ses, free:t.free+r.free, apt:t.apt+r.apt, done:t.done+r.done, lost:t.lost+r.lost,
+    expected:t.expected+r.expected, sesPaid:t.sesPaid+r.sesPaid, inv:t.inv+r.inv, invPaid:t.invPaid+r.invPaid}),
+    {ses:0,free:0,apt:0,done:0,lost:0,expected:0,sesPaid:0,inv:0,invPaid:0});
+
   const printPeriodic = () => {
     const w = window.open('','_blank');
     if(!w){ alert('فعّل النوافذ المنبثقة لعرض التقرير.'); return; }
@@ -5094,6 +5323,11 @@ ${tr(['إجمالي الفواتير', fmt(rBilled)+' '+cur, ''])}
 ${tr(['الخصومات', fmt(rDisc)+' '+cur, ''])}
 ${tr(['المتبقي (ذمم)', fmt(rRem)+' '+cur, ''])}
 ${tr(['صافي الربح', fmt(rNet)+' '+cur, ''])}
+</table>
+<h2>التقرير حسب نوع الخدمة</h2><table><tr><th>الخدمة</th><th>جلسات</th><th>مجانية</th><th>مواعيد (حضر / ملغى-غياب)</th><th>السعر</th><th>المتوقع</th><th>المحصّل بالجلسات</th><th>الفرق</th><th>فواتير</th><th>المعالجون</th></tr>
+${rSvcRows.map(r=>tr([r.name, r.ses, r.free, r.apt+' ('+r.done+' / '+r.lost+')', r.price?fmt(r.price):'—', fmt(r.expected), fmt(r.sesPaid),
+  '<b style="color:'+(r.diff<0?'#dc2626':'#059669')+'">'+fmt(r.diff)+'</b>', r.inv+' • '+fmt(r.invPaid), r.therTxt||'—'])).join('')||'<tr><td colspan=10 style="text-align:center;color:#888">لا بيانات</td></tr>'}
+${rSvcRows.length?tr(['<b>الإجمالي</b>','<b>'+rSvcTot.ses+'</b>',rSvcTot.free,rSvcTot.apt+' ('+rSvcTot.done+' / '+rSvcTot.lost+')','','<b>'+fmt(rSvcTot.expected)+'</b>','<b>'+fmt(rSvcTot.sesPaid)+'</b>','<b>'+fmt(rSvcTot.sesPaid-rSvcTot.expected)+'</b>',rSvcTot.inv+' • '+fmt(rSvcTot.invPaid),'']):''}
 </table>
 <h2>التفصيل اليومي</h2><table><tr><th>التاريخ</th><th>جلسات</th><th>مواعيد</th><th>فواتير</th><th>محصّل</th><th>مصروف</th></tr>
 ${rDays.map(x=>tr([x.d,x.ses,x.apt,x.inv,fmt(x.paid),fmt(x.exp)])).join('')||'<tr><td colspan=6 style="text-align:center;color:#888">—</td></tr>'}
@@ -5486,6 +5720,51 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
                 <h3 style={{color:c,fontSize:18}}>{v}</h3><p>{l}</p>
               </div></div>
             ))}
+          </div>
+
+          {/* التقرير حسب نوع الخدمة */}
+          <div className="card" style={{borderTop:'3px solid var(--accent)'}}>
+            <div className="card-header"><h3>🛠️ التقرير حسب نوع الخدمة — {rRange.label}</h3></div>
+            <div style={{overflowX:'auto'}}>
+              <table className="data-table">
+                <thead><tr>
+                  <th>الخدمة</th><th>جلسات</th><th>مجانية</th><th>مواعيد</th><th>حضر</th><th>ملغى/غياب</th>
+                  <th>السعر</th><th>المتوقع</th><th>المحصّل بالجلسات</th><th>الفرق</th><th>فواتير</th><th>المعالجون</th>
+                </tr></thead>
+                <tbody>
+                  {rSvcRows.map(r=>(
+                    <tr key={r.name}>
+                      <td style={{fontWeight:800}}>{r.name}{!r.price && r.name!=='غير محدد' && <span title="غير موجودة في الخدمات والأسعار" style={{color:'var(--orange)'}}> ⚠️</span>}</td>
+                      <td style={{fontWeight:700}}>{r.ses}</td>
+                      <td>{r.free||'—'}</td>
+                      <td>{r.apt}</td>
+                      <td style={{color:'var(--green)',fontWeight:700}}>{r.done}</td>
+                      <td style={{color:r.lost?'var(--red)':'var(--text-light)',fontWeight:700}}>{r.lost}</td>
+                      <td>{r.price?fmt(r.price):'—'}</td>
+                      <td>{fmt(r.expected)}</td>
+                      <td style={{color:'var(--green)',fontWeight:700}}>{fmt(r.sesPaid)}</td>
+                      <td style={{color:r.diff<0?'var(--red)':'var(--green)',fontWeight:800}}>{fmt(r.diff)}</td>
+                      <td style={{fontSize:12}}>{r.inv} · {fmt(r.invPaid)}</td>
+                      <td style={{fontSize:12,color:'var(--text-mid)'}}>{r.therTxt||'—'}</td>
+                    </tr>
+                  ))}
+                  {rSvcRows.length>0&&(
+                    <tr style={{background:'var(--surface)',fontWeight:800}}>
+                      <td>الإجمالي</td><td>{rSvcTot.ses}</td><td>{rSvcTot.free}</td><td>{rSvcTot.apt}</td>
+                      <td style={{color:'var(--green)'}}>{rSvcTot.done}</td><td style={{color:'var(--red)'}}>{rSvcTot.lost}</td>
+                      <td></td><td>{fmt(rSvcTot.expected)}</td>
+                      <td style={{color:'var(--green)'}}>{fmt(rSvcTot.sesPaid)}</td>
+                      <td style={{color:(rSvcTot.sesPaid-rSvcTot.expected)<0?'var(--red)':'var(--green)'}}>{fmt(rSvcTot.sesPaid-rSvcTot.expected)}</td>
+                      <td style={{fontSize:12}}>{rSvcTot.inv} · {fmt(rSvcTot.invPaid)}</td><td></td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {rSvcRows.length===0&&<div className="empty-state" style={{padding:20}}><p>لا جلسات أو مواعيد في هذه المدة.</p></div>}
+            <div style={{padding:'8px 16px',fontSize:11.5,color:'var(--text-light)'}}>
+              «المتوقع» = سعر الخدمة في 🛠️ الخدمات والأسعار × الجلسات غير المجانية. «الفرق» بالأحمر يعني أن المحصّل أقل من المتوقع.
+            </div>
           </div>
 
           {/* التفصيل اليومي */}
@@ -6397,14 +6676,12 @@ function InventoryModal({item, categories, onClose}){
 // SERVICES PAGE
 // ══════════════════════════════════════════════════
 function ServicesPage(){
-  const {settings} = useClinic();
-  const [services, setServices] = useState(()=>{ try{return JSON.parse(localStorage.getItem('mc6_services'))||DEF_SERVICES;}catch{return DEF_SERVICES;} });
+  const {settings, services, addService, updateService, deleteService} = useClinic();
   const [modal,setModal] = useState(null);
-  useEffect(()=>{ localStorage.setItem('mc6_services',JSON.stringify(services)); },[services]);
 
-  const add = (d) => { const n={...d,id:nextId('SV'),active:true}; setServices(p=>[...p,n]); setModal(null); };
-  const update = (id,d) => { setServices(p=>p.map(x=>x.id===id?{...x,...d}:x)); setModal(null); };
-  const del = (id) => { if(confirm('حذف الخدمة؟')) setServices(p=>p.filter(x=>x.id!==id)); };
+  const add = (d) => { addService({...d,active:true}); setModal(null); };
+  const update = (id,d) => { updateService(id,d); setModal(null); };
+  const del = (id) => { if(confirm('حذف الخدمة؟')) deleteService(id); };
 
   return(
     <div className="page-content">
@@ -7889,13 +8166,19 @@ function AIAssistantPage({navigate}){
     ctx += `إجمالي المرضى: ${patients.length}\n`;
     ctx += `المرضى النشطون: ${patients.filter(p=>p.status==='نشط').length}\n`;
     ctx += `الجلسات هذا الشهر: ${sessions.filter(s=>s.date?.startsWith(ym)).length}\n`;
-    const monthRev = finance.filter(f=>f.date?.startsWith(ym)).reduce((s,f)=>s+(f.paid||0),0);
-    const monthExp = (expenses||[]).filter(e=>e.date?.startsWith(ym)).reduce((s,e)=>s+(e.amount||0),0);
-    const outstanding = finance.reduce((s,f)=>s+(f.remaining||0),0);
-    ctx += `الإيرادات هذا الشهر: ${monthRev.toLocaleString()} ل.س\n`;
-    ctx += `المصروفات هذا الشهر: ${monthExp.toLocaleString()} ل.س\n`;
-    ctx += `صافي الربح الشهري: ${(monthRev-monthExp).toLocaleString()} ل.س\n`;
-    ctx += `إجمالي المبالغ المستحقة (غير محصّلة): ${outstanding.toLocaleString()} ل.س\n`;
+    if(canSeeFinance()){
+      const monthRev = finance.filter(f=>f.date?.startsWith(ym)).reduce((s,f)=>s+(f.paid||0),0);
+      const monthExp = isAdminUser() ? (expenses||[]).filter(e=>e.date?.startsWith(ym)).reduce((s,e)=>s+(e.amount||0),0) : 0;
+      const outstanding = finance.reduce((s,f)=>s+(f.remaining||0),0);
+      ctx += `الإيرادات هذا الشهر: ${monthRev.toLocaleString()} ل.س\n`;
+      if(isAdminUser()){
+        ctx += `المصروفات هذا الشهر: ${monthExp.toLocaleString()} ل.س\n`;
+        ctx += `صافي الربح الشهري: ${(monthRev-monthExp).toLocaleString()} ل.س\n`;
+      }
+      ctx += `إجمالي المبالغ المستحقة (غير محصّلة): ${outstanding.toLocaleString()} ل.س\n`;
+    } else {
+      ctx += `\n🔒 تعليمات صارمة: المستخدم الحالي موظف ليس لديه صلاحية الاطلاع على أي معلومات مالية (إيرادات، مصروفات، أرباح، رواتب، فواتير، مستحقات، أسعار، مدفوعات المرضى). لا تملك هذه البيانات ولا تخمّنها. إذا سُئلت عنها فاعتذر بلطف وقل إنها متاحة للإدارة فقط، ثم تابع المساعدة في الجوانب السريرية والتشغيلية.\n`;
+    }
     ctx += `مواعيد اليوم: ${(appointments||[]).filter(a=>a.date===todayISO).length}\n`;
     const lowStock = (inventory||[]).filter(i=>i.quantity<=i.minLevel);
     if(lowStock.length) ctx += `⚠️ أصناف مخزون منخفضة: ${lowStock.map(i=>i.name).join('، ')}\n`;
@@ -7947,7 +8230,7 @@ function AIAssistantPage({navigate}){
       }
       if(patApt.length) ctx += `\n📅 المواعيد القادمة: ${patApt.slice(0,5).map(a=>`${a.date} ${a.time||''}`).join('، ')}\n`;
       const rem = patFin.reduce((s,f)=>s+(Number(f.remaining)||0),0);
-      if(rem>0) ctx += `💰 مستحقات غير مسددة: ${rem.toLocaleString()} ${settings.currency||'ل.س'}\n`;
+      if(rem>0 && canSeeFinance()) ctx += `💰 مستحقات غير مسددة: ${rem.toLocaleString()} ${settings.currency||'ل.س'}\n`;
     }
     return ctx;
   };
@@ -8205,7 +8488,7 @@ function AIAssistantPage({navigate}){
       {activeTab==='actions'&&(
         <div style={{flex:1,overflowY:'auto'}}>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:12}}>
-            {AI_QUICK_ACTIONS.map(action=>(
+            {AI_QUICK_ACTIONS.filter(a=>canSeeFinance() || (a.id!=='price' && a.id!=='analyze')).map(action=>(
               <div key={action.id} className="card"
                 style={{cursor:'pointer',transition:'all 0.18s'}}
                 onClick={()=>handleQuickAction(action)}>
@@ -8830,7 +9113,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       ...(STAFF_MODE ? [] : [{id:'staff', icon:'👨‍⚕️', label:'فريق العمل'}]),
       ...(STAFF_MODE ? [] : [{id:'audit', icon:'🔒',  label:'سجل التعديلات'}]),
       ...(STAFF_MODE ? [] : [{id:'trash', icon:'🗑️', label:'سلة المحذوفات'}]),
-      ...(isAdminUser() ? [{id:'users', icon:'🔐', label:'إدارة المستخدمين'}] : []),
+      ...(isAdminUser() && !STAFF_MODE ? [{id:'users', icon:'🔐', label:'إدارة المستخدمين'}] : []),
     ]},
     { section:'النظام', items:[
       {id:'categories', icon:'🗂️', label:'الفئات والقوائم'},
@@ -8887,6 +9170,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
               <span style={{fontSize:11,fontWeight:700,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{window.__MC_USER.email}</span>
             </div>
           )}
+          {window.__MC_USER && <ChangeMyPasswordButton/>}
           <button
             onClick={async()=>{ if(confirm('تسجيل الخروج من النظام؟')){ try{ await _supaClient.auth.signOut(); }catch(e){} } }}
             style={{width:'100%',padding:'8px',marginBottom:10,background:'rgba(220,38,38,0.15)',border:'1px solid rgba(220,38,38,0.4)',color:'#fca5a5',borderRadius:8,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:12,fontWeight:700}}
@@ -9231,7 +9515,7 @@ function AttendancePage(){
 // مركز مهام الكادر + مرضى المعالج اليوم
 // ══════════════════════════════════════════════════
 function TaskCenterPage(){
-  const {tasks,addTask,updateTask,deleteTask,staff,appointments,patients,settings,updateAppointment} = useClinic();
+  const {tasks,addTask,updateTask,deleteTask,staff,appointments,patients,settings,services,updateAppointment} = useClinic();
   const [role,setRole] = useState(localStorage.getItem('mc_role')||'physio');
   const [myName,setMyName] = useState(localStorage.getItem('mc_staff_name')||'');
   const [period,setPeriod] = useState('daily');
@@ -9287,7 +9571,13 @@ function TaskCenterPage(){
   const pname = (a) => (patMap[a.patientId]&&patMap[a.patientId].name) || a.patientName || '—';
   const apptTher = (a)=> a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || '';
   const myApts = appointments.filter(a=>a.date===todayStr && (!myName || normName(apptTher(a))===normName(myName))).sort((a,b)=>String(a.time).localeCompare(String(b.time)));
-  const markAtt = (a,status)=>updateAppointment(a.id,{...a,status});
+  const markAtt = (a,status)=>{
+    if(status==='completed' && canSeeFinance()){
+      const svc = (services||[]).find(s=>s.name===a.service);
+      if(svc && svc.price>0) alert(`💰 تذكير: سعر «${svc.name}» المحدد في الخدمات والأسعار هو ${fmt(svc.price)} ${settings.currency}. تأكد من تسجيل الدفعة المطابقة.`);
+    }
+    updateAppointment(a.id,{...a,status});
+  };
   const roleObj = TASK_ROLES.find(r=>r.key===role)||{};
 
   return(
@@ -9511,7 +9801,19 @@ function UserManagementPage(){
   const [rows,setRows] = useState([]);
   const [busy,setBusy] = useState(false);
   const [err,setErr]   = useState('');
+  const [authInfo,setAuthInfo] = useState({});   // id → {confirmed,last_sign_in_at}
+  const [fnErr,setFnErr] = useState('');
+  const [showAdd,setShowAdd] = useState(false);
+  const [pwFor,setPwFor] = useState(null);       // صف الحساب المراد تغيير كلمة مروره
+  const [rowBusy,setRowBusy] = useState('');
 
+  const loadStatus = async () => {
+    try{
+      const d = await adminUsersCall('status');
+      setAuthInfo(Object.fromEntries((d.users||[]).map(u=>[u.id,u])));
+      setFnErr('');
+    }catch(e){ setFnErr(e.message); }
+  };
   const load = async () => {
     setBusy(true); setErr('');
     try{
@@ -9519,9 +9821,28 @@ function UserManagementPage(){
       if(error) throw error;
       setRows(data||[]);
     }catch(e){ setErr('تعذّر جلب الحسابات: '+((e&&e.message)||'')); }
+    await loadStatus();
     setBusy(false);
   };
   useEffect(()=>{ load(); }, []);
+
+  const confirmEmail = async (r) => {
+    setRowBusy(r.id);
+    try{ await adminUsersCall('confirm',{id:r.id}); showToast('✅ تم توثيق البريد — يستطيع الدخول الآن'); await loadStatus(); }
+    catch(e){ showToast(e.message,'error'); }
+    setRowBusy('');
+  };
+  const sendReset = async (r) => {
+    if(!r.email) return;
+    if(!confirm(`إرسال رابط تعيين كلمة مرور جديدة إلى ${r.email}؟`)) return;
+    setRowBusy(r.id);
+    try{
+      const { error } = await _supaClient.auth.resetPasswordForEmail(r.email, { redirectTo: location.origin + location.pathname });
+      if(error) throw error;
+      showToast('📧 تم إرسال رابط الاستعادة إلى البريد');
+    }catch(e){ showToast('تعذّر الإرسال: '+e.message,'error'); }
+    setRowBusy('');
+  };
 
   const patch = async (id, fields) => {
     setRows(p=>p.map(r=>r.id===id?{...r,...fields}:r)); // تحديث فوري بالواجهة
@@ -9537,23 +9858,43 @@ function UserManagementPage(){
   return(
     <div>
       <div className="page-header">
-        <div><h1>🔐 إدارة المستخدمين</h1><p>دور كل حساب وصلاحياته — يُنشأ الحساب نفسه من Supabase Dashboard</p></div>
-        <button className="btn btn-outline" onClick={load} disabled={busy}>{busy?'⏳ جاري...':'🔄 تحديث'}</button>
+        <div><h1>🔐 إدارة المستخدمين</h1><p>إنشاء حسابات الموظفين وتوثيقها وتغيير كلمات المرور — من هنا مباشرة</p></div>
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-outline" onClick={load} disabled={busy}>{busy?'⏳ جاري...':'🔄 تحديث'}</button>
+          <button className="btn btn-accent" onClick={()=>setShowAdd(true)} disabled={!!fnErr}>➕ إضافة حساب موظف</button>
+        </div>
       </div>
 
       <div className="alert alert-info" style={{marginBottom:14}}>
-        💡 لإضافة موظف جديد: Supabase ← Authentication ← Users ← Add user (إيميل + كلمة مرور) ثم ارجع هنا واضبط دوره وفعّله.
+        💡 الحساب الذي تنشئه من هنا يكون <strong>موثَّقاً تلقائياً</strong> — أعطِ الموظف البريد وكلمة المرور ويدخل فوراً، ويستطيع تغيير كلمة مروره لاحقاً من «🔑 كلمة المرور» أسفل القائمة الجانبية.
         <br/>⚠️ <strong>المصاريف والرواتب</strong> لا يراها إلا <strong>المدير</strong> دائماً (مفروض من قاعدة البيانات نفسها، وليس فقط من الواجهة).
       </div>
+      {fnErr && (
+        <div className="alert alert-warning" style={{marginBottom:14}}>
+          <div>
+            ⚠️ أزرار الإنشاء والتوثيق وتعيين كلمة المرور تحتاج نشر الدالة الآمنة <strong>admin-users</strong> مرة واحدة:
+            <code dir="ltr" style={{display:'block',margin:'6px 0',padding:'6px 10px',background:'rgba(0,0,0,0.06)',borderRadius:6}}>supabase functions deploy admin-users</code>
+            <span style={{fontSize:12}}>التفاصيل: {fnErr}</span>
+          </div>
+        </div>
+      )}
       {err && <div className="alert alert-error" style={{marginBottom:14}}>{err}</div>}
 
-      <div className="card">
+      <div className="card" style={{overflowX:'auto'}}>
         <table className="data-table">
-          <thead><tr><th>البريد الإلكتروني</th><th>الدور</th><th>مرتبط بموظف</th><th>مُفعَّل</th><th>تاريخ الإنشاء</th></tr></thead>
+          <thead><tr><th>البريد الإلكتروني</th><th>التوثيق</th><th>الدور</th><th>مرتبط بموظف</th><th>مُفعَّل</th><th>آخر دخول</th><th>كلمة المرور</th></tr></thead>
           <tbody>
-            {rows.map(r=>(
+            {rows.map(r=>{ const ai = authInfo[r.id]; return (
               <tr key={r.id}>
                 <td style={{fontWeight:700}}>{r.email || r.id}{isMe(r.id) && <span className="badge badge-blue" style={{marginRight:8}}>أنت</span>}</td>
+                <td>
+                  {!ai ? <span style={{color:'var(--text-light)'}}>—</span>
+                   : ai.confirmed ? <span className="badge badge-green">✅ موثَّق</span>
+                   : <div style={{display:'flex',alignItems:'center',gap:6}}>
+                       <span className="badge badge-orange">⏳ غير موثَّق</span>
+                       <button className="btn btn-sm btn-primary" disabled={rowBusy===r.id} onClick={()=>confirmEmail(r)}>✔️ توثيق الآن</button>
+                     </div>}
+                </td>
                 <td>
                   <select className="input" value={r.role||'therapist'} disabled={isMe(r.id)}
                     onChange={e=>patch(r.id,{role:e.target.value})} style={{minWidth:120}}>
@@ -9578,13 +9919,230 @@ function UserManagementPage(){
                     <span className={'badge badge-'+(r.active?'green':'red')}>{r.active?'نشط':'معطَّل'}</span>
                   </label>
                 </td>
-                <td style={{fontSize:12,color:'var(--text-light)'}}>{r.created_at?new Date(r.created_at).toLocaleDateString('ar-EG'):'—'}</td>
+                <td style={{fontSize:12,color:'var(--text-light)'}}>{ai&&ai.last_sign_in_at?new Date(ai.last_sign_in_at).toLocaleString('ar-EG'):'لم يدخل بعد'}</td>
+                <td>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    <button className="btn btn-sm btn-outline" disabled={!!fnErr || rowBusy===r.id} onClick={()=>setPwFor(r)}>🔑 تعيين</button>
+                    <button className="btn btn-sm btn-ghost" disabled={rowBusy===r.id || !r.email} onClick={()=>sendReset(r)} title="يرسل للموظف رابطاً يختار منه كلمة مرور بنفسه">📧 رابط</button>
+                  </div>
+                </td>
               </tr>
-            ))}
+            ); })}
           </tbody>
         </table>
         {rows.length===0 && !busy && <div className="empty-state" style={{padding:30}}><div className="icon">👤</div><h3>لا حسابات بعد</h3></div>}
       </div>
+      {showAdd && <AddUserModal staff={staff} onClose={()=>setShowAdd(false)} onDone={()=>{ setShowAdd(false); load(); }}/>}
+      {pwFor && <SetUserPasswordModal row={pwFor} staff={staff} onClose={()=>setPwFor(null)}/>}
+    </div>
+  );
+}
+
+function credentialsText(email, password){
+  return `بيانات دخولك إلى نظام العيادة 🏥\nالرابط: ${location.origin + location.pathname}\nالبريد: ${email}\nكلمة المرور: ${password}\n\nيُنصح بتغيير كلمة المرور بعد أول دخول من «🔑 كلمة المرور» أسفل القائمة.`;
+}
+function CredentialsResult({email, password, phone, onClose}){
+  const text = credentialsText(email, password);
+  const copy = async () => { try{ await navigator.clipboard.writeText(text); alert('✅ تم النسخ'); }catch(e){ alert(text); } };
+  const wa = () => {
+    let ph=String(phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
+    window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(text),'_blank');
+  };
+  return(
+    <>
+      <div className="modal-body">
+        <div className="alert alert-success" style={{marginBottom:12}}>✅ تم الحفظ — الحساب جاهز للدخول فوراً.</div>
+        <pre dir="rtl" style={{whiteSpace:'pre-wrap',background:'var(--surface)',padding:12,borderRadius:10,fontFamily:'Cairo,sans-serif',fontSize:13,lineHeight:1.9}}>{text}</pre>
+        <div style={{fontSize:12,color:'var(--text-light)'}}>⚠️ كلمة المرور لا تظهر مرة أخرى بعد إغلاق هذه النافذة — انسخها أو أرسلها الآن.</div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
+        <div style={{flex:1}}/>
+        <button className="btn btn-outline" onClick={copy}>📋 نسخ</button>
+        {phone && <button className="btn btn-accent" onClick={wa}>📱 إرسال واتساب</button>}
+      </div>
+    </>
+  );
+}
+
+function AddUserModal({staff, onClose, onDone}){
+  const [form,setForm] = useState({email:'',password:genPassword(),role:'therapist',staff_id:''});
+  const [show,setShow] = useState(true);
+  const [busy,setBusy] = useState(false);
+  const [done,setDone] = useState(false);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const linked = (staff||[]).find(s=>s.id===form.staff_id);
+  const pickStaff = (id) => {
+    const s = (staff||[]).find(x=>x.id===id);
+    setForm(p=>({...p, staff_id:id,
+      email: p.email || (s&&s.email) || '',
+      role: s ? (s.role==='استقبال'?'reception':(s.role==='مدير'?'admin':'therapist')) : p.role }));
+  };
+  const save = async () => {
+    if(!form.email.includes('@')) return alert('أدخل بريداً إلكترونياً صحيحاً');
+    if(form.password.length<6) return alert('كلمة المرور 6 أحرف على الأقل');
+    setBusy(true);
+    try{ await adminUsersCall('create',{...form, staff_id:form.staff_id||null}); setDone(true); }
+    catch(e){ alert('❌ '+e.message); }
+    setBusy(false);
+  };
+  return(
+    <div className="modal-overlay" onClick={done?onDone:onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <div className="modal-header"><h2>➕ إضافة حساب موظف</h2><button className="modal-close" onClick={done?onDone:onClose}>✕</button></div>
+        {done ? <CredentialsResult email={form.email} password={form.password} phone={linked&&linked.phone} onClose={onDone}/> : (
+          <>
+            <div className="modal-body">
+              <Field label="الموظف (من فريق العمل)">
+                <select className="input" value={form.staff_id} onChange={e=>pickStaff(e.target.value)}>
+                  <option value="">— اختر الموظف (اختياري) —</option>
+                  {(staff||[]).map(s=><option key={s.id} value={s.id}>{s.name} — {s.role}</option>)}
+                </select>
+              </Field>
+              <TF label="البريد الإلكتروني *" value={form.email} onChange={v=>f('email',v.trim())}/>
+              <Field label="كلمة المرور *">
+                <div style={{display:'flex',gap:6}}>
+                  <input className="input" dir="ltr" type={show?'text':'password'} value={form.password} onChange={e=>f('password',e.target.value)} style={{flex:1}}/>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={()=>setShow(!show)}>{show?'🙈':'👁'}</button>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={()=>f('password',genPassword())} title="توليد كلمة مرور قوية">🎲</button>
+                </div>
+              </Field>
+              <SF label="الدور (الصلاحيات)" value={form.role} onChange={v=>f('role',v)}
+                options={[{value:'therapist',label:'معالج'},{value:'reception',label:'استقبال'},{value:'admin',label:'مدير'}]}/>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={onClose}>إلغاء</button>
+              <div style={{flex:1}}/>
+              <button className="btn btn-accent" onClick={save} disabled={busy}>{busy?'⏳ جاري الإنشاء...':'✅ إنشاء الحساب'}</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SetUserPasswordModal({row, staff, onClose}){
+  const [pw,setPw] = useState(genPassword());
+  const [busy,setBusy] = useState(false);
+  const [done,setDone] = useState(false);
+  const linked = (staff||[]).find(s=>s.id===row.staff_id);
+  const save = async () => {
+    if(pw.length<6) return alert('كلمة المرور 6 أحرف على الأقل');
+    setBusy(true);
+    try{ await adminUsersCall('set_password',{id:row.id, password:pw}); setDone(true); }
+    catch(e){ alert('❌ '+e.message); }
+    setBusy(false);
+  };
+  return(
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <div className="modal-header"><h2>🔑 كلمة مرور جديدة — {row.email}</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        {done ? <CredentialsResult email={row.email} password={pw} phone={linked&&linked.phone} onClose={onClose}/> : (
+          <>
+            <div className="modal-body">
+              <Field label="كلمة المرور الجديدة">
+                <div style={{display:'flex',gap:6}}>
+                  <input className="input" dir="ltr" value={pw} onChange={e=>setPw(e.target.value)} style={{flex:1}}/>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={()=>setPw(genPassword())} title="توليد">🎲</button>
+                </div>
+              </Field>
+              <div style={{fontSize:12,color:'var(--text-light)'}}>كلمة المرور القديمة تتوقف فوراً. الموظف يستطيع تغييرها لاحقاً بنفسه.</div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={onClose}>إلغاء</button>
+              <div style={{flex:1}}/>
+              <button className="btn btn-accent" onClick={save} disabled={busy}>{busy?'⏳ جاري...':'💾 حفظ كلمة المرور'}</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── تغيير كلمة المرور الشخصية (لأي مستخدم) — يتحقق من القديمة أولاً ──
+function ChangeMyPasswordModal({onClose}){
+  const [cur,setCur] = useState('');
+  const [pw,setPw]   = useState('');
+  const [pw2,setPw2] = useState('');
+  const [busy,setBusy] = useState(false);
+  const [err,setErr] = useState('');
+  const save = async () => {
+    setErr('');
+    if(pw.length<6) return setErr('كلمة المرور الجديدة 6 أحرف على الأقل');
+    if(pw!==pw2) return setErr('كلمتا المرور غير متطابقتين');
+    setBusy(true);
+    try{
+      const email = window.__MC_USER && window.__MC_USER.email;
+      const { error: e1 } = await _supaClient.auth.signInWithPassword({ email, password: cur });
+      if(e1) throw new Error('كلمة المرور الحالية غير صحيحة');
+      const { error: e2 } = await _supaClient.auth.updateUser({ password: pw });
+      if(e2) throw e2;
+      alert('✅ تم تغيير كلمة المرور بنجاح');
+      onClose();
+    }catch(e){ setErr(e.message); }
+    setBusy(false);
+  };
+  return(
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+        <div className="modal-header"><h2>🔑 تغيير كلمة المرور</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-body">
+          <TF label="كلمة المرور الحالية" type="password" value={cur} onChange={setCur}/>
+          <TF label="كلمة المرور الجديدة" type="password" value={pw} onChange={setPw}/>
+          <TF label="تأكيد كلمة المرور الجديدة" type="password" value={pw2} onChange={setPw2}/>
+          {err && <div className="alert alert-error">{err}</div>}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>إلغاء</button>
+          <div style={{flex:1}}/>
+          <button className="btn btn-accent" onClick={save} disabled={busy}>{busy?'⏳ جاري...':'💾 حفظ'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function ChangeMyPasswordButton(){
+  const [open,setOpen] = useState(false);
+  return(
+    <>
+      <button onClick={()=>setOpen(true)}
+        style={{width:'100%',padding:'8px',marginBottom:8,background:'rgba(255,255,255,0.08)',border:'1px solid rgba(255,255,255,0.2)',color:'rgba(255,255,255,0.85)',borderRadius:8,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:12,fontWeight:700}}
+      >🔑 كلمة المرور</button>
+      {open && <ChangeMyPasswordModal onClose={()=>setOpen(false)}/>}
+    </>
+  );
+}
+
+// ── شاشة اختيار كلمة مرور جديدة بعد فتح رابط «نسيت كلمة المرور» من البريد ──
+function SetNewPasswordScreen({onDone}){
+  const [pw,setPw] = useState('');
+  const [pw2,setPw2] = useState('');
+  const [busy,setBusy] = useState(false);
+  const [err,setErr] = useState('');
+  const save = async (e) => {
+    e.preventDefault(); setErr('');
+    if(pw.length<6) return setErr('كلمة المرور 6 أحرف على الأقل');
+    if(pw!==pw2) return setErr('كلمتا المرور غير متطابقتين');
+    setBusy(true);
+    try{
+      const { error } = await _supaClient.auth.updateUser({ password: pw });
+      if(error) throw error;
+      alert('✅ تم تعيين كلمة المرور الجديدة');
+      onDone();
+    }catch(e2){ setErr(e2.message); }
+    setBusy(false);
+  };
+  return(
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'linear-gradient(170deg, var(--primary) 0%, #0a1f36 100%)',padding:20,fontFamily:'Cairo,sans-serif'}}>
+      <form onSubmit={save} style={{width:'100%',maxWidth:380,background:'#fff',borderRadius:20,padding:'30px 26px',boxShadow:'0 20px 60px rgba(0,0,0,0.35)'}}>
+        <h2 style={{textAlign:'center',color:'var(--primary)',marginTop:0}}>🔑 اختر كلمة مرور جديدة</h2>
+        <input className="input" type="password" dir="ltr" placeholder="كلمة المرور الجديدة" value={pw} onChange={e=>setPw(e.target.value)} style={{width:'100%',marginBottom:12}}/>
+        <input className="input" type="password" dir="ltr" placeholder="تأكيد كلمة المرور" value={pw2} onChange={e=>setPw2(e.target.value)} style={{width:'100%',marginBottom:12}}/>
+        {err && <div style={{background:'var(--red-light)',color:'var(--red)',padding:'9px 12px',borderRadius:8,fontSize:12.5,fontWeight:700,marginBottom:12}}>{err}</div>}
+        <button type="submit" className="btn btn-primary" disabled={busy} style={{width:'100%',justifyContent:'center',padding:11}}>{busy?'⏳ جارٍ...':'💾 حفظ والدخول'}</button>
+      </form>
     </div>
   );
 }
@@ -9617,7 +10175,7 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'trash':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <RecycleBinPage/>;
     case 'categories': return <CategoriesPage/>;
     case 'settings':   return <SettingsPage/>;
-    case 'users':      return isAdminUser() ? <UserManagementPage/> : <Dashboard navigate={navigate}/>;
+    case 'users':      return isAdminUser() && !STAFF_MODE ? <UserManagementPage/> : <Dashboard navigate={navigate}/>;
     default:           return <Dashboard navigate={navigate}/>;
   }
 }
@@ -9671,6 +10229,19 @@ function LoginScreen(){
     } finally { setBusy(false); }
   };
 
+  const forgot = async () => {
+    setErr(''); setMsg('');
+    const em = email.trim();
+    if (!em.includes('@')) { setErr('اكتب بريدك الإلكتروني أولاً ثم اضغط «نسيت كلمة المرور»'); return; }
+    setBusy(true);
+    try {
+      const { error } = await _supaClient.auth.resetPasswordForEmail(em, { redirectTo: location.origin + location.pathname });
+      if (error) throw error;
+      setMsg('📧 أرسلنا رابط تعيين كلمة مرور جديدة إلى بريدك — افتحه من نفس الجهاز.');
+    } catch(e2) { setErr((e2 && e2.message) || 'تعذّر الإرسال'); }
+    finally { setBusy(false); }
+  };
+
   return (
     <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
       background:'linear-gradient(170deg, var(--primary) 0%, #0a1f36 100%)',padding:20,fontFamily:'Cairo,sans-serif'}}>
@@ -9705,6 +10276,10 @@ function LoginScreen(){
             style={{width:'100%',justifyContent:'center',padding:'11px'}}>
             {busy ? '⏳ جارٍ...' : '🔐 دخول'}
           </button>
+          <button type="button" onClick={forgot} disabled={busy}
+            style={{width:'100%',marginTop:10,background:'none',border:'none',color:'var(--primary)',fontWeight:700,fontSize:12.5,cursor:'pointer',fontFamily:'Cairo,sans-serif'}}>
+            🔑 نسيت كلمة المرور؟
+          </button>
         </form>
 
         <div style={{textAlign:'center',marginTop:16,fontSize:12,color:'var(--text-light)',lineHeight:1.8}}>
@@ -9719,6 +10294,7 @@ function LoginScreen(){
 function RootApp(){
   const [session,setSession] = useState(undefined); // undefined=قيد التحميل
   const [profile,setProfile] = useState(undefined); // undefined=قيد التحميل، null=غير موجود
+  const [recovery,setRecovery] = useState(false);   // فُتح رابط «نسيت كلمة المرور»
 
   const loadProfile = async (uid) => {
     if (!uid) { setProfile(null); window.__MC_ROLE = null; return; }
@@ -9737,6 +10313,7 @@ function RootApp(){
       loadProfile(data.session ? data.session.user.id : null);
     });
     const { data: sub } = _supaClient.auth.onAuthStateChange((_event, s)=>{
+      if (_event === 'PASSWORD_RECOVERY') setRecovery(true);
       window.__MC_USER = s ? s.user : null;
       setSession(s);
       loadProfile(s ? s.user.id : null);
@@ -9755,6 +10332,7 @@ function RootApp(){
     );
   }
   if (!session) return <LoginScreen/>;
+  if (recovery) return <SetNewPasswordScreen onDone={()=>setRecovery(false)}/>;
   if (!profile || !profile.active) {
     return (
       <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
