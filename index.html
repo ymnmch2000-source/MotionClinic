@@ -9260,11 +9260,13 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
         </header>
 
         <div className="content-area">
-          <PageRouter
-            currentPage={currentPage}
-            patientId={patientId}
-            navigate={navigate}
-          />
+          <AppErrorBoundary key={currentPage+'|'+(patientId||'')} inline>
+            <PageRouter
+              currentPage={currentPage}
+              patientId={patientId}
+              navigate={navigate}
+            />
+          </AppErrorBoundary>
         </div>
       </main>
     </div>
@@ -10340,6 +10342,36 @@ function LoginScreen(){
   );
 }
 
+// يمنع «الشاشة البيضاء»: أي خطأ أثناء رسم الواجهة يُعرض بوضوح مع زر إعادة المحاولة
+class AppErrorBoundary extends React.Component {
+  constructor(p){ super(p); this.state = {err:null, info:null}; }
+  static getDerivedStateFromError(err){ return {err}; }
+  componentDidCatch(err, info){ this.setState({info}); try{ console.error('MC crash:', err, info); }catch(e){} }
+  render(){
+    if(!this.state.err) return this.props.children;
+    const e = this.state.err;
+    const where = ((this.state.info && this.state.info.componentStack) || '').split('\n').map(s=>s.trim()).filter(Boolean).slice(0,4).join(' ← ');
+    const text = String((e && e.message) || e) + (where ? '\n' + where : '');
+    return (
+      <div style={this.props.inline
+        ? {display:'flex',justifyContent:'center',padding:'30px 16px',fontFamily:'Cairo,sans-serif'}
+        : {minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'linear-gradient(170deg,#1a3c5e,#0a1f36)',padding:20,fontFamily:'Cairo,sans-serif'}}>
+        <div style={{maxWidth:560,width:'100%',background:'#fff',borderRadius:16,padding:'26px 22px',textAlign:'center',border:this.props.inline?'1px solid #fca5a5':'none'}}>
+          <div style={{fontSize:40}}>⚠️</div>
+          <h2 style={{color:'#1a3c5e',margin:'8px 0'}}>حدث خطأ أثناء عرض هذه الصفحة</h2>
+          <p style={{fontSize:13,color:'#64748b'}}>بياناتك محفوظة ولم تتأثر. صوّر هذه الرسالة وأرسلها للدعم الفني.</p>
+          <pre dir="ltr" style={{textAlign:'left',whiteSpace:'pre-wrap',wordBreak:'break-word',background:'#f1f5f9',borderRadius:10,padding:12,fontSize:12,color:'#991b1b',maxHeight:220,overflow:'auto'}}>{text}</pre>
+          <div style={{display:'flex',gap:10,justifyContent:'center',flexWrap:'wrap',marginTop:12}}>
+            <button className="btn btn-primary" onClick={()=>location.reload()}>🔄 إعادة المحاولة</button>
+            <button className="btn btn-outline" onClick={()=>{ this.setState({err:null,info:null}); }}>↩️ الرجوع</button>
+            <button className="btn btn-ghost" onClick={()=>window.__mcHardReload && window.__mcHardReload()}>🧹 مسح الذاكرة المؤقتة</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
 // مكوّن الجذر: يتحكّم بحالة الجلسة ويعرض إمّا تسجيل الدخول أو النظام
 function RootApp(){
   const [session,setSession] = useState(undefined); // undefined=قيد التحميل
@@ -10402,7 +10434,7 @@ function RootApp(){
   return <App/>;
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<RootApp/>);
+ReactDOM.createRoot(document.getElementById('root')).render(<AppErrorBoundary><RootApp/></AppErrorBoundary>);
 </script>
 
 
