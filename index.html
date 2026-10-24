@@ -710,9 +710,11 @@ const sb = {
   // حذف ناعم (Tombstone) — لا يُحذف السجل فعلياً بل يُعلَّم كمحذوف.
   // هذا يمنع عودة السجلات المحذوفة عند المزامنة من جهاز آخر كان مغلقاً (سبب رئيسي للتداخل).
   async delete(table, id) {
+    // upsert وليس update: إن لم يكن السجل مرفوعاً للسحابة أصلاً (مثل الخدمات الافتراضية)
+    // يُنشأ له شاهد حذف، فلا يعود للظهور على الأجهزة والملفات الأخرى.
+    const now = new Date().toISOString();
     const { error } = await _supaClient.from(table)
-      .update({ deleted: true, deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('id', id);
+      .upsert({ id, deleted: true, deleted_at: now, updated_at: now }, { onConflict: 'id' });
     if (error) throw new Error(error.message);
     return true;
   },
@@ -1062,20 +1064,6 @@ const DEF_CATEGORIES = {
     {id:'hep4',label:'تمارين إطالة'},{id:'hep5',label:'تمارين تنفس'},{id:'hep6',label:'تمارين وظيفية'},
   ],
 };
-// العيادات القائمة قبل هذا التحديث لديها نسخة محفوظة سحابياً من categories بدون هذه الأنواع الـ5 —
-// هذه الدالة تضيفها تلقائياً (مرة واحدة، idempotent) دون حذف أي نوع موجود مسبقاً.
-const REQUIRED_SESSION_TYPES = ['جلسة علاج طبيعي','تقييم شامل','قياس InBody','جلسة حجامة','استشارة تغذية'];
-function ensureSessionTypes(cats){
-  if(!cats) return cats;
-  const list = cats.sessionTypes || [];
-  const existingLabels = new Set(list.map(s=>s.label));
-  const missing = REQUIRED_SESSION_TYPES.filter(l=>!existingLabels.has(l));
-  if(missing.length===0) return cats;
-  let maxN = 0;
-  list.forEach(s=>{ const n=parseInt(String(s.id||'').replace('stype',''))||0; if(n>maxN) maxN=n; });
-  const added = missing.map((label,i)=>({id:'stype'+(maxN+1+i), label}));
-  return {...cats, sessionTypes:[...list, ...added]};
-}
 
 const DEF_SERVICES = [
   {id:'SV001',name:'جلسة علاج طبيعي',category:'علاج طبيعي',price:15000,duration:60,active:true},
@@ -1228,7 +1216,7 @@ function ClinicProvider({ children }) {
   // ⚠️ سجلات المرضى تبدأ فارغة دائماً — لا بيانات تجريبية تُزرع (تمنع تلوث البيانات والتداخل بين الأجهزة)
   // الإعدادات والتصنيفات فقط تبقى لها قيم افتراضية لأنها إعدادات وليست سجلات.
   const [settings,    setSettings]   = useState(() => ls('mc6_settings',    DEF_SETTINGS));
-  const [categories,  setCategories] = useState(() => ensureSessionTypes(ls('mc6_categories',  DEF_CATEGORIES)));
+  const [categories,  setCategories] = useState(() => ls('mc6_categories',  DEF_CATEGORIES));
   const [patients,    setPatients]   = useState(() => ls('mc6_patients',    []));
   const [records,     setRecords]    = useState(() => ls('mc6_records',     []));
   const [sessions,    setSessions]   = useState(() => ls('mc6_sessions',    []));
@@ -1243,6 +1231,7 @@ function ClinicProvider({ children }) {
   const [attendance,  setAttendance] = useState(() => ls('mc6_attendance',  []));
   const [tasks,       setTasks]      = useState(() => ls('mc6_tasks',       []));
   const [services,    setServices]   = useState(() => ls('mc6_services',    DEF_SERVICES));
+  const servicesRef = useRef(services); servicesRef.current = services;
   const [audit,       setAudit]      = useState(() => ls('mc6_audit',       DEF_AUDIT));
   const [toast,       setToast]      = useState(null);
   const [syncStatus,  setSyncStatus] = useState('idle'); // idle | syncing | online | offline | error
@@ -1457,6 +1446,9 @@ function ClinicProvider({ children }) {
             if (rows && rows.length > 0) {
               // دمج: آخر تعديل يربح (LWW) + احترام شواهد الحذف (Tombstones)
               setter(local => {
+                // قائمة الخدمات والأسعار: نسخة السحابة هي المرجع الوحيد لكل الأجهزة والملفات
+                if (table === 'mc_services') return rows.filter(r => !r.deleted)
+                  .sort((a,b)=>String(a.id).localeCompare(String(b.id)));
                 // استرجاع كامل من السحابة — تجاهل النسخة المحلية تماماً
                 if (doForce) return rows.filter(r => !r.deleted)
                   .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''));
@@ -1478,6 +1470,10 @@ function ClinicProvider({ children }) {
                   .filter(r => !r.deleted)
                   .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''));
               });
+            } else if (table === 'mc_services' && isAdminUser() && !STAFF_MODE) {
+              // السحابة فارغة: ارفع قائمة المدير مرة واحدة لتصبح المرجع المشترك
+              const list = (servicesRef.current || []).filter(r => r && r.id && !r.deleted);
+              if (list.length) await sb.upsert('mc_services', list);
             }
           } catch(e) { pullErrs.push(e.message || String(e)); }
         })
@@ -1494,7 +1490,7 @@ function ClinicProvider({ children }) {
           const cloudSettings = await sb.selectKV('settings');
           if (cloudSettings) setSettings(s => ({ ...s, ...cloudSettings }));
           const cloudCats = await sb.selectKV('categories');
-          if (cloudCats) setCategories(ensureSessionTypes(cloudCats));
+          if (cloudCats) setCategories(cloudCats);
         }
       } catch(e) {}
 
@@ -1545,7 +1541,10 @@ function ClinicProvider({ children }) {
 
       if (eventType === 'INSERT') {
         const rec = normalize(newRow);
-        if (rec && rec.deleted) return;            // تجاهل السجلات المعلَّمة محذوفة
+        if (rec && rec.deleted) {                  // شاهد حذف جديد لسجل لم يكن في السحابة → أزله محلياً
+          setter(prev => prev.filter(x => x.id !== rec.id));
+          return;
+        }
         if (rec) setter(prev => {
           if (prev.some(x => x.id === rec.id)) return prev; // تجنب التكرار
           return [rec, ...prev];
@@ -8536,7 +8535,7 @@ function AIAssistantPage({navigate}){
           </div>
           {messages.length>0&&<button className="btn btn-ghost btn-sm" onClick={exportChat} title="تصدير المحادثة">⬇️</button>}
           {messages.length>0&&<button className="btn btn-ghost btn-sm" onClick={clearChat} title="مسح المحادثة">🗑</button>}
-          <button className="btn btn-ghost btn-sm" onClick={()=>navigate('settings')} title="إعدادات AI">⚙️</button>
+          {!STAFF_MODE && <button className="btn btn-ghost btn-sm" onClick={()=>navigate('settings')} title="إعدادات AI">⚙️</button>}
         </div>
       </div>
 
@@ -9196,8 +9195,10 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       ...(isAdminUser() && !STAFF_MODE ? [{id:'users', icon:'🔐', label:'إدارة المستخدمين'}] : []),
     ]},
     { section:'النظام', items:[
-      {id:'categories', icon:'🗂️', label:'الفئات والقوائم'},
-      {id:'settings',   icon:'⚙️', label:'الإعدادات'},
+      ...(STAFF_MODE ? [] : [
+        {id:'categories', icon:'🗂️', label:'الفئات والقوائم'},
+        {id:'settings',   icon:'⚙️', label:'الإعدادات'},
+      ]),
     ]},
   ];
 
@@ -9230,7 +9231,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
           </div>
         </div>
         <nav className="sidebar-nav">
-          {NAV.map(grp=>(
+          {NAV.filter(grp=>grp.items.length>0).map(grp=>(
             <div key={grp.section} className="nav-section">
               <div className="nav-section-title">{grp.section}</div>
               {grp.items.map(item=>(
@@ -10259,8 +10260,8 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'tasks':      return <TaskCenterPage/>;
     case 'audit':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <AuditPage/>;
     case 'trash':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <RecycleBinPage/>;
-    case 'categories': return <CategoriesPage/>;
-    case 'settings':   return <SettingsPage/>;
+    case 'categories': return STAFF_MODE ? <Dashboard navigate={navigate}/> : <CategoriesPage/>;
+    case 'settings':   return STAFF_MODE ? <Dashboard navigate={navigate}/> : <SettingsPage/>;
     case 'users':      return isAdminUser() && !STAFF_MODE ? <UserManagementPage/> : <Dashboard navigate={navigate}/>;
     default:           return <Dashboard navigate={navigate}/>;
   }
