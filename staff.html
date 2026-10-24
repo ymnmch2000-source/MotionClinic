@@ -24,6 +24,24 @@ window.addEventListener('appinstalled', function(){
 </script>
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800;900&family=Tajawal:wght@300;400;500;700;800&display=swap" rel="stylesheet"/>
 <script>
+/* امتلاء localStorage (~5MB) كان يرمي خطأ يوقف النظام كله. عند الامتلاء: نحذف نسخ القوائم الكبيرة
+   (محفوظة أصلاً في IndexedDB وفي السحابة) ثم نعيد المحاولة، وإن فشلت نتجاهل الكتابة بصمت. */
+(function(){
+  try{
+    var BIG = ['mc6_snapshots','mc6_audit','mc6_patients','mc6_records','mc6_sessions','mc6_appointments','mc6_finance',
+               'mc6_expenses','mc6_inbody','mc6_notes','mc6_hep','mc6_inventory','mc6_attendance','mc6_tasks','mc6_staff'];
+    var orig = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(k, v){
+      try { return orig.call(this, k, v); }
+      catch(e){
+        if(this !== window.localStorage) throw e;
+        for(var i=0;i<BIG.length;i++){ if(BIG[i] !== k){ try{ this.removeItem(BIG[i]); }catch(_){} } }
+        try { return orig.call(this, k, v); }
+        catch(e2){ try{ console.warn('localStorage ممتلئ — تم تجاهل حفظ', k); }catch(_){} }
+      }
+    };
+  }catch(e){}
+})();
 /* شاشة بديلة عن «الصفحة البيضاء»: أي خطأ قبل ظهور النظام يُعرض للمستخدم مع زر إعادة المحاولة */
 window.__mcBootErrors = [];
 function __mcShowBootError(msg){
@@ -1192,10 +1210,15 @@ async function idbKeys(store=IDB_FILES){
   try{ const db=await idbOpen(); return await new Promise((res)=>{ const tx=db.transaction(store,'readonly'); const rq=tx.objectStore(store).getAllKeys(); rq.onsuccess=()=>res(rq.result||[]); rq.onerror=()=>res([]); }); }catch(e){ return []; }
 }
 // حفظ موحّد آمن: IndexedDB (دائم) + localStorage (ذاكرة إقلاع) — لا يتعطل عند امتلاء localStorage
+// القوائم الكبيرة تُحفظ في IndexedDB فقط — localStorage سعته ~5MB وامتلاؤه كان يوقف النظام كله
+const LS_MAX_CHARS = 200000;
 function persistKV(key,value){
   idbSet(key, value);
-  try{ localStorage.setItem(key, JSON.stringify(value)); }
-  catch(e){ /* localStorage ممتلئ — IndexedDB يحتفظ بالبيانات */ }
+  try{
+    const s = JSON.stringify(value);
+    if(s.length > LS_MAX_CHARS){ localStorage.removeItem(key); return; }
+    localStorage.setItem(key, s);
+  }catch(e){ /* localStorage ممتلئ — IndexedDB يحتفظ بالبيانات */ }
 }
 
 // ══════════════════════════════════════════════════
@@ -1231,31 +1254,35 @@ function ClinicProvider({ children }) {
   const isOnline = useRef(navigator.onLine);
   const flushingRef = useRef(false);                    // يمنع تشغيل عمليتي رفع متزامنتين
 
+  const _bootDoneRef = useRef(false);
+  const _latestRef = useRef({});
+  const persistBoot = (k,v) => { _latestRef.current[k]=v; if(_bootDoneRef.current) persistKV(k,v); };
   // ── Persist locally (always — offline safety net) — IndexedDB دائم + localStorage إقلاع ──
-  useEffect(()=>{persistKV('mc6_settings',    settings);},   [settings]);
-  useEffect(()=>{persistKV('mc6_categories',  categories);}, [categories]);
-  useEffect(()=>{persistKV('mc6_patients',    patients);},   [patients]);
-  useEffect(()=>{persistKV('mc6_records',     records);},    [records]);
-  useEffect(()=>{persistKV('mc6_sessions',    sessions);},   [sessions]);
-  useEffect(()=>{persistKV('mc6_appointments',appointments);}, [appointments]);
-  useEffect(()=>{persistKV('mc6_finance',     finance);},    [finance]);
-  useEffect(()=>{persistKV('mc6_expenses',    expenses);},   [expenses]);
-  useEffect(()=>{persistKV('mc6_inbody',      inbody);},     [inbody]);
-  useEffect(()=>{persistKV('mc6_notes',       notes);},      [notes]);
-  useEffect(()=>{persistKV('mc6_staff',       staff);},      [staff]);
-  useEffect(()=>{persistKV('mc6_inventory',   inventory);},  [inventory]);
-  useEffect(()=>{persistKV('mc6_hep',         hepLib);},     [hepLib]);
-  useEffect(()=>{persistKV('mc6_attendance',  attendance);}, [attendance]);
-  useEffect(()=>{persistKV('mc6_tasks',       tasks);},      [tasks]);
-  useEffect(()=>{persistKV('mc6_services',    services);},   [services]);
-  useEffect(()=>{persistKV('mc6_audit',       audit);},      [audit]);
-  useEffect(()=>{persistKV('mc6_last_sync',   lastSync);},   [lastSync]);
+  useEffect(()=>{persistBoot('mc6_settings',    settings);},   [settings]);
+  useEffect(()=>{persistBoot('mc6_categories',  categories);}, [categories]);
+  useEffect(()=>{persistBoot('mc6_patients',    patients);},   [patients]);
+  useEffect(()=>{persistBoot('mc6_records',     records);},    [records]);
+  useEffect(()=>{persistBoot('mc6_sessions',    sessions);},   [sessions]);
+  useEffect(()=>{persistBoot('mc6_appointments',appointments);}, [appointments]);
+  useEffect(()=>{persistBoot('mc6_finance',     finance);},    [finance]);
+  useEffect(()=>{persistBoot('mc6_expenses',    expenses);},   [expenses]);
+  useEffect(()=>{persistBoot('mc6_inbody',      inbody);},     [inbody]);
+  useEffect(()=>{persistBoot('mc6_notes',       notes);},      [notes]);
+  useEffect(()=>{persistBoot('mc6_staff',       staff);},      [staff]);
+  useEffect(()=>{persistBoot('mc6_inventory',   inventory);},  [inventory]);
+  useEffect(()=>{persistBoot('mc6_hep',         hepLib);},     [hepLib]);
+  useEffect(()=>{persistBoot('mc6_attendance',  attendance);}, [attendance]);
+  useEffect(()=>{persistBoot('mc6_tasks',       tasks);},      [tasks]);
+  useEffect(()=>{persistBoot('mc6_services',    services);},   [services]);
+  useEffect(()=>{persistBoot('mc6_audit',       audit);},      [audit]);
+  useEffect(()=>{persistBoot('mc6_last_sync',   lastSync);},   [lastSync]);
 
   // ── استرجاع من IndexedDB عند الإقلاع (إن فقد localStorage بيانات بسبب امتلاء السعة) ──
   const _hydratedRef = useRef(false);
   useEffect(()=>{
     if(_hydratedRef.current) return; _hydratedRef.current=true;
     (async()=>{
+     try{
       const map={ mc6_patients:setPatients, mc6_records:setRecords, mc6_sessions:setSessions, mc6_appointments:setApts, mc6_finance:setFinance, mc6_expenses:setExpenses, mc6_inbody:setInbody, mc6_notes:setNotes, mc6_staff:setStaff, mc6_inventory:setInventory, mc6_hep:setHepLib, mc6_attendance:setAttendance, mc6_tasks:setTasks, mc6_services:setServices };
       // ⚠️ لا نستبدل الحالة الحالية أبداً — قد يكون السحب من السحابة قد سبقنا
       // (سباق قديم كان يستبدل بيانات السحابة الطازجة بنسخة محلية قديمة → بيانات ناقصة).
@@ -1275,6 +1302,11 @@ function ClinicProvider({ children }) {
           });
         }catch(e){}
       }
+     } finally {
+      // الآن فقط يُسمح بالحفظ المحلي — قبل ذلك قد تكتب الحالة الفارغة الأولية فوق نسخة IndexedDB
+      _bootDoneRef.current = true;
+      for(const [k,v] of Object.entries(_latestRef.current)) persistKV(k, v);
+     }
     })();
   }, []);
 
