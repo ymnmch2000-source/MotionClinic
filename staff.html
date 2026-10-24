@@ -23,12 +23,38 @@ window.addEventListener('appinstalled', function(){
 });
 </script>
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800;900&family=Tajawal:wght@300;400;500;700;800&display=swap" rel="stylesheet"/>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script>
+/* شاشة بديلة عن «الصفحة البيضاء»: أي خطأ قبل ظهور النظام يُعرض للمستخدم مع زر إعادة المحاولة */
+window.__mcBootErrors = [];
+function __mcShowBootError(msg){
+  var s = document.getElementById('mc-splash'); if(!s) return;
+  var box = document.getElementById('mc-splash-msg'); if(!box) return;
+  box.innerHTML = '⚠️ تعذّر تشغيل النظام<br><span style="font-size:12px;opacity:.85;direction:ltr;display:block;margin-top:8px;word-break:break-word">' +
+    String(msg).replace(/[<>&]/g,'').slice(0,300) + '</span>';
+  document.getElementById('mc-splash-actions').style.display = 'flex';
+}
+window.addEventListener('error', function(e){
+  var t = e && e.target;
+  var m = (t && t.src) ? ('فشل تحميل: ' + t.src) : ((e && e.message) || 'خطأ غير معروف');
+  window.__mcBootErrors.push(m);
+  if (document.getElementById('mc-splash')) __mcShowBootError(m);
+}, true);
+function __mcHardReload(){
+  try{ if(navigator.serviceWorker) navigator.serviceWorker.getRegistrations().then(function(rs){ rs.forEach(function(r){ r.unregister(); }); }); }catch(e){}
+  try{ if(window.caches) caches.keys().then(function(ks){ ks.forEach(function(k){ caches.delete(k); }); }); }catch(e){}
+  setTimeout(function(){ location.reload(); }, 600);
+}
+</script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script>window.React || document.write('<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"><\/script>')</script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script>window.ReactDOM || document.write('<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"><\/script>')</script>
 <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+<script>window.Babel || document.write('<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.23.5/babel.min.js"><\/script>')</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>window.supabase || document.write('<script src="https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"><\/script>')</script>
 <style>
 /* ══════════════════════════════════════════════════
    MOTION CLINIC v6 — ENTERPRISE DESIGN SYSTEM
@@ -444,7 +470,28 @@ select.input{cursor:pointer;}
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root"><div id="mc-splash" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:linear-gradient(170deg,#1a3c5e,#0a1f36);color:#fff;font-family:Cairo,Tahoma,sans-serif;text-align:center;padding:20px">
+  <div style="font-size:44px">🏥</div>
+  <div style="font-size:18px;font-weight:800">Motion Clinic</div>
+  <div id="mc-splash-msg" style="font-size:14px;opacity:.85;max-width:420px;line-height:1.8">جارٍ تحميل النظام... قد يستغرق ذلك بضع ثوانٍ على الهاتف</div>
+  <div id="mc-splash-actions" style="display:none;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px">
+    <button onclick="location.reload()" style="padding:9px 18px;border:none;border-radius:10px;background:#e8a020;color:#fff;font-weight:800;font-family:inherit;cursor:pointer">🔄 إعادة المحاولة</button>
+    <button onclick="__mcHardReload()" style="padding:9px 18px;border:1px solid rgba(255,255,255,.4);border-radius:10px;background:transparent;color:#fff;font-weight:700;font-family:inherit;cursor:pointer">🧹 مسح الذاكرة المؤقتة وإعادة التحميل</button>
+  </div>
+</div></div>
+<script>
+if(location.protocol === 'file:'){
+  document.getElementById('mc-splash-msg').innerHTML = '⚠️ النظام لا يعمل عند فتح الملف مباشرة من الجهاز.<br>افتحه من رابط الموقع على GitHub (https://...) بدلاً من ذلك.';
+}
+setTimeout(function(){
+  if(!document.getElementById('mc-splash')) return;
+  var m = document.getElementById('mc-splash-msg');
+  if(document.getElementById('mc-splash-actions').style.display === 'flex') return;
+  m.innerHTML = '⏳ التحميل يستغرق وقتاً أطول من المعتاد.<br>تأكد من اتصال الإنترنت ثم اضغط إعادة المحاولة.' +
+    (window.__mcBootErrors.length ? '<br><span style="font-size:12px;direction:ltr;display:block;margin-top:8px">' + window.__mcBootErrors[0].replace(/[<>&]/g,'').slice(0,300) + '</span>' : '');
+  document.getElementById('mc-splash-actions').style.display = 'flex';
+}, 30000);
+</script>
 <script>window.__MC_STAFF=true;</script>
 <script type="text/babel" data-presets="react">
 /* @jsxRuntime classic */
@@ -9866,14 +9913,18 @@ function UserManagementPage(){
       </div>
 
       <div className="alert alert-info" style={{marginBottom:14}}>
-        💡 الحساب الذي تنشئه من هنا يكون <strong>موثَّقاً تلقائياً</strong> — أعطِ الموظف البريد وكلمة المرور ويدخل فوراً، ويستطيع تغيير كلمة مروره لاحقاً من «🔑 كلمة المرور» أسفل القائمة الجانبية.
-        <br/>⚠️ <strong>المصاريف والرواتب</strong> لا يراها إلا <strong>المدير</strong> دائماً (مفروض من قاعدة البيانات نفسها، وليس فقط من الواجهة).
+        <div>
+          💡 الحساب الذي تنشئه من هنا يكون <strong>موثَّقاً تلقائياً</strong> — أعطِ الموظف البريد وكلمة المرور ويدخل فوراً، ويستطيع تغيير كلمة مروره لاحقاً من «🔑 كلمة المرور» أسفل القائمة الجانبية.
+          <br/>⚠️ <strong>المصاريف والرواتب</strong> لا يراها إلا <strong>المدير</strong> دائماً (مفروض من قاعدة البيانات نفسها، وليس فقط من الواجهة).
+        </div>
       </div>
       {fnErr && (
         <div className="alert alert-warning" style={{marginBottom:14}}>
           <div>
-            ⚠️ أزرار الإنشاء والتوثيق وتعيين كلمة المرور تحتاج نشر الدالة الآمنة <strong>admin-users</strong> مرة واحدة:
-            <code dir="ltr" style={{display:'block',margin:'6px 0',padding:'6px 10px',background:'rgba(0,0,0,0.06)',borderRadius:6}}>supabase functions deploy admin-users</code>
+            ⚠️ أزرار الإنشاء والتوثيق وتعيين كلمة المرور تحتاج نشر الدالة الآمنة <strong>admin-users</strong> مرة واحدة من موقع Supabase:
+            <div style={{margin:'6px 0',lineHeight:1.9}}>
+              Supabase ← Edge Functions ← Deploy a new function ← Via Editor ← الاسم <code dir="ltr">admin-users</code> ← الصق محتوى الملف <code dir="ltr">supabase/functions/admin-users/index.ts</code> ← Deploy، ثم اضغط «🔄 تحديث» هنا.
+            </div>
             <span style={{fontSize:12}}>التفاصيل: {fnErr}</span>
           </div>
         </div>
