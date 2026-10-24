@@ -570,8 +570,8 @@ window.__MC_ROLE = null;
 function myRole(){ return window.__MC_ROLE || 'therapist'; } // أقل صلاحية افتراضياً حتى يُحمَّل الدور
 function isAdminUser(){ return myRole() === 'admin'; }
 // الفواتير: مدير أو استقبال. المصاريف: مدير فقط دوماً (مفروضة أيضاً بـ RLS).
-// في ملف الموظفين (STAFF_MODE) تُخفى المالية بالكامل من الواجهة بلا أي استثناء لأي دور.
-function canSeeFinance(){ if(STAFF_MODE) return false; const r = myRole(); return r === 'admin' || r === 'reception'; }
+// المالية حسب الدور في كل الملفات: المدير والاستقبال فقط (المصاريف والأرباح للمدير وحده — انظر isAdminUser).
+function canSeeFinance(){ const r = myRole(); return r === 'admin' || r === 'reception'; }
 
 // ── تحمّل اختلاف المخطط (Schema drift) ──
 // إذا لم يُشغَّل supabase_migration.sql بعد، فأي حقل جديد يُفشل رفع السجل كاملاً
@@ -5596,7 +5596,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
         <div><h1 className="page-title">💰 المالية</h1><p className="page-subtitle">الإيرادات والمصروفات وصافي الربح — {periodLabel}</p></div>
         <div style={{display:'flex',gap:8}}>
           <button className="btn btn-secondary" onClick={printReport}>📊 تقرير</button>
-          <button className="btn btn-primary" onClick={()=>setExpModal({})}>+ مصروف</button>
+          {isAdminUser() && <button className="btn btn-primary" onClick={()=>setExpModal({})}>+ مصروف</button>}
           <button className="btn btn-accent" onClick={()=>setModal('new')}>+ فاتورة</button>
         </div>
       </div>
@@ -5614,8 +5614,10 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
         {[
           ['💰 إيرادات محصلة', fmt(totalRev)+' '+cur, 'var(--green)', null],
           ['⏳ مستحقات', fmt(totalPend)+' '+cur, 'var(--accent)', 'نسبة التحصيل '+collectRate+'%'],
+          ...(isAdminUser() ? [
           ['💸 مصروفات', fmt(totalExp)+' '+cur, 'var(--red)', null],
           ['📈 صافي الربح', fmt(netProfit)+' '+cur, netProfit>=0?'var(--green)':'var(--red)', 'هامش '+profitMargin+'%'],
+          ] : []),
         ].map(([l,v,c,sub],i)=>(
           <div key={i} className="stat-card">
             <div className="stat-content">
@@ -5628,7 +5630,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
       </div>
 
       <div className="tabs-nav">
-        {[['invoices','📋 الفواتير'],['receivables','💳 الذمم'],['expenses','💸 المصروفات'],['periodic','🧾 التقارير الدورية'],['reports','📊 التحليلات'],['audit','🔍 المراجعة'+((errCount+warnCount)>0?` (${errCount+warnCount})`:'')]].map(([k,l])=>(
+        {[['invoices','📋 الفواتير'],['receivables','💳 الذمم'],...(isAdminUser()?[['expenses','💸 المصروفات']]:[]),['periodic','🧾 التقارير الدورية'],...(isAdminUser()?[['reports','📊 التحليلات']]:[]),['audit','🔍 المراجعة'+((errCount+warnCount)>0?` (${errCount+warnCount})`:'')]].map(([k,l])=>(
           <button key={k} className={`tab-btn ${tab===k?'active':''}`} onClick={()=>setTab(k)}>{l}</button>
         ))}
       </div>
@@ -5780,7 +5782,7 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
               ['🔄 عدد الجلسات', rSes.length, 'var(--purple)', 'مواعيد: '+rApt.length+' · حضر '+rAttended+' · تخلّف '+rNoShow],
               ['📋 عدد الفواتير', rInv.length, 'var(--blue)', 'إجمالي '+fmt(rBilled)+' '+cur],
               ['💰 المحصّل', fmt(rPaid)+' '+cur, 'var(--green)', 'متبقٍ '+fmt(rRem)+' '+cur],
-              ['💸 المصروفات', fmt(rExpTot)+' '+cur, 'var(--red)', 'عدد '+rExp.length],
+              ...(isAdminUser()?[['💸 المصروفات', fmt(rExpTot)+' '+cur, 'var(--red)', 'عدد '+rExp.length]]:[]),
             ].map(([l,v,c,sub],i)=>(
               <div key={i} className="stat-card"><div className="stat-content">
                 <h3 style={{color:c,fontSize:18}}>{v}</h3><p>{l}</p>
@@ -5790,7 +5792,7 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
           </div>
           <div className="stats-grid" style={{gridTemplateColumns:'repeat(3,1fr)'}}>
             {[
-              ['📈 صافي الربح', fmt(rNet)+' '+cur, rNet>=0?'var(--green)':'var(--red)'],
+              ...(isAdminUser()?[['📈 صافي الربح', fmt(rNet)+' '+cur, rNet>=0?'var(--green)':'var(--red)']]:[]),
               ['🏷️ الخصومات', fmt(rDisc)+' '+cur, 'var(--accent)'],
               ['🆕 مرضى جدد', rNewPat, 'var(--primary)'],
             ].map(([l,v,c],i)=>(
@@ -5890,7 +5892,7 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
               </div>
             </div>
             {/* المصروفات حسب الفئة */}
-            <div className="card">
+            {isAdminUser() && <div className="card">
               <div className="card-header"><h3>💸 المصروفات حسب الفئة</h3></div>
               <div className="card-body">
                 {rExpRows.length===0&&<div style={{color:'var(--text-light)',fontSize:13}}>لا مصروفات في هذه المدة.</div>}
@@ -5903,7 +5905,7 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
                   </div>
                 ))}
               </div>
-            </div>
+            </div>}
           </div>
 
           {/* فواتير المدة */}
@@ -5927,7 +5929,7 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
           </div>
 
           {/* مصروفات المدة */}
-          <div className="card">
+          {isAdminUser() && <div className="card">
             <div className="card-header"><h3>💸 مصروفات المدة ({rExp.length})</h3></div>
             <table className="data-table">
               <thead><tr><th>التاريخ</th><th>البيان</th><th>الفئة</th><th>المبلغ</th></tr></thead>
@@ -5941,7 +5943,7 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
               </tbody>
             </table>
             {rExp.length===0&&<div className="empty-state" style={{padding:20}}><p>لا مصروفات في هذه المدة.</p></div>}
-          </div>
+          </div>}
 
           {/* جلسات المدة */}
           <div className="card">
@@ -10460,6 +10462,25 @@ function RootApp(){
         <button className="btn" style={{marginTop:10}} onClick={()=>_supaClient.auth.signOut()}>
           🚪 تسجيل الخروج
         </button>
+      </div>
+    );
+  }
+  // ملف الإدارة (index.html) للمدير فقط — أي دور آخر يُوجَّه إلى ملف الموظفين
+  if (!STAFF_MODE && profile.role !== 'admin') {
+    const staffUrl = location.origin + location.pathname.slice(0, location.pathname.lastIndexOf('/') + 1) + 'staff.html';
+    return (
+      <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+        background:'linear-gradient(170deg,#1a3c5e,#0a1f36)',color:'#fff',fontFamily:'Cairo,sans-serif',
+        flexDirection:'column',gap:14,textAlign:'center',padding:20}}>
+        <div style={{fontSize:40}}>🔒</div>
+        <div style={{fontSize:17,fontWeight:800}}>هذا ملف الإدارة — للمدير فقط</div>
+        <div style={{fontSize:13,opacity:0.85,maxWidth:380,lineHeight:1.8}}>
+          حسابك ({profile.email || (window.__MC_USER && window.__MC_USER.email) || ''}) مسجَّل كموظف. استخدم رابط الموظفين للدخول إلى النظام.
+        </div>
+        <div style={{display:'flex',gap:10,flexWrap:'wrap',justifyContent:'center',marginTop:6}}>
+          <button className="btn btn-accent" onClick={()=>{ location.href = staffUrl; }}>👥 الانتقال إلى ملف الموظفين</button>
+          <button className="btn" onClick={()=>_supaClient.auth.signOut()}>🚪 تسجيل الخروج</button>
+        </div>
       </div>
     );
   }
