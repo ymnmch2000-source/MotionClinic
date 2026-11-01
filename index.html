@@ -2163,10 +2163,133 @@ function ReminderTemplateModal({value, vars, onSave, onClose}){
   );
 }
 
+// ══════════════════════════════════════════════════
+// جدولة المعالجين: منع الحجز المزدوج + توثيق الجلسات بعد الحضور
+// ══════════════════════════════════════════════════
+const SLOT_DAY_START = 8*60, SLOT_DAY_END = 22*60, SLOT_STEP = 30;
+function toMin(t){ const m = String(t||'').match(/^(\d{1,2}):(\d{2})/); return m ? (+m[1])*60 + (+m[2]) : null; }
+function fromMin(n){ return String(Math.floor(n/60)).padStart(2,'0') + ':' + String(n%60).padStart(2,'0'); }
+// مدة الخدمة من «الخدمات والأسعار»؛ الخدمات بلا مدة (كالباقات) تُعامل كساعة
+function svcDuration(services, name){ const s=(services||[]).find(x=>x.name===name); const d=Number(s&&s.duration)||0; return d>0 ? d : 60; }
+function aptTherName(a, patients){ return a.therapist || ((patients||[]).find(p=>String(p.id)===String(a.patientId))||{}).assignedTherapist || ''; }
+function findTherapistConflict(apt, appointments, services, patients){
+  if(apt.status==='cancelled' || apt.status==='missed') return null;
+  const ther = aptTherName(apt, patients); const s = toMin(apt.time);
+  if(!ther || !apt.date || s==null) return null;
+  const e = s + svcDuration(services, apt.service);
+  for(const x of (appointments||[])){
+    if(x.id===apt.id || x.date!==apt.date || x.status==='cancelled' || x.status==='missed') continue;
+    if(normName(aptTherName(x, patients)) !== normName(ther)) continue;
+    const xs = toMin(x.time); if(xs==null) continue;
+    const xe = xs + svcDuration(services, x.service);
+    if(s < xe && xs < e) return {...x, _start:xs, _end:xe};
+  }
+  return null;
+}
+function freeSlotsFor(apt, appointments, services, patients, limit){
+  const dur = svcDuration(services, apt.service);
+  const want = toMin(apt.time); const out = [];
+  for(let t=SLOT_DAY_START; t+dur<=SLOT_DAY_END; t+=SLOT_STEP){
+    if(!findTherapistConflict({...apt, time:fromMin(t)}, appointments, services, patients)) out.push(t);
+  }
+  if(want!=null) out.sort((a,b)=>Math.abs(a-want)-Math.abs(b-want));
+  return out.slice(0, limit||8).sort((a,b)=>a-b).map(fromMin);
+}
+// التقييم والاستشارة ← سجل طبي؛ InBody له قسمه الخاص؛ بقية الخدمات ← متابعة جلسة
+function docKindFor(service){
+  const n = String(service||'');
+  if(/تقييم|استشارة/.test(n)) return 'record';
+  if(/inbody/i.test(n)) return null;
+  return 'session';
+}
+function isAptDocumented(a, sessions, records){
+  const kind = docKindFor(a.service); if(!kind) return true;
+  const list = kind==='record' ? (records||[]) : (sessions||[]);
+  return list.some(x => (x.appointmentId && x.appointmentId===a.id) || (String(x.patientId)===String(a.patientId) && x.date===a.date));
+}
+function undocumentedApts(appointments, sessions, records, fromDate){
+  return (appointments||[]).filter(a => a.status==='completed' && (!fromDate || (a.date||'')>=fromDate) && a.date<=today() && !isAptDocumented(a, sessions, records))
+    .sort((a,b)=>String(b.date).localeCompare(String(a.date)) || String(a.time||'').localeCompare(String(b.time||'')));
+}
+
+// نافذة «يجب التوثيق الآن» بعد تعليم المريض «حضر» — تفتح نموذج المتابعة أو السجل الطبي مُعبّأً
+function DocPrompt({apt, onClose, direct}){
+  const {patients, settings} = useClinic();
+  const kind = docKindFor(apt.service);
+  const [writing,setWriting] = useState(!!direct);
+  if(!kind) return null;
+  const patient = patients.find(p=>String(p.id)===String(apt.patientId));
+  const pname = (patient&&patient.name) || apt.patientName || '—';
+  const ther = apt.therapist || (patient&&patient.assignedTherapist) || settings.therapistName;
+  if(writing){
+    return kind==='record'
+      ? <RecordModal patientId={apt.patientId} record={null} onClose={onClose}
+          prefill={{date:apt.date, therapistName:ther, appointmentId:apt.id}}/>
+      : <SessionModal patientId={apt.patientId} patient={patient} session={null} onClose={onClose}
+          prefill={{date:apt.date, type:apt.service||'', therapistName:ther, appointmentId:apt.id}}/>;
+  }
+  const what = kind==='record' ? 'كتابة السجل الطبي (تقييم / استشارة)' : 'تسجيل متابعة الجلسة';
+  return(
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+        <div className="modal-header"><h2>📝 توثيق مطلوب</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-body" style={{textAlign:'center'}}>
+          <div style={{fontSize:40}}>✅</div>
+          <div style={{fontWeight:800,fontSize:15,margin:'6px 0'}}>تم تسجيل حضور {pname}</div>
+          <div style={{fontSize:13,color:'var(--text-mid)',lineHeight:1.9}}>
+            {apt.service||'—'} · {apt.date} {apt.time||''} · {ther}<br/>
+            يجب الآن <strong>{what}</strong> لهذا الموعد.
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>لاحقاً</button>
+          <div style={{flex:1}}/>
+          <button className="btn btn-accent" onClick={()=>setWriting(true)}>{kind==='record'?'🏥 كتابة السجل الطبي الآن':'🔄 تسجيل متابعة الجلسة الآن'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// بطاقة «مواعيد حضرت بحاجة توثيق» (آخر 14 يوماً) — تظهر في لوحة التحكم ومهام الكادر
+function UndocumentedCard({onlyTherapist}){
+  const {appointments, sessions, records, patients} = useClinic();
+  const [doc,setDoc] = useState(null);
+  const from = (()=>{ const d=new Date(); d.setDate(d.getDate()-14); return d.toISOString().slice(0,10); })();
+  let list = undocumentedApts(appointments, sessions, records, from);
+  if(onlyTherapist) list = list.filter(a=>normName(aptTherName(a,patients))===normName(onlyTherapist));
+  if(list.length===0) return null;
+  const pn = (a)=> ((patients.find(p=>String(p.id)===String(a.patientId))||{}).name) || a.patientName || '—';
+  return(
+    <div className="card" style={{marginTop:20,borderTop:'3px solid var(--orange)'}}>
+      <div className="card-header"><h3>📝 مواعيد حضرت بحاجة توثيق ({list.length})</h3></div>
+      <div style={{overflowX:'auto'}}>
+        <table className="data-table">
+          <thead><tr><th>التاريخ</th><th>المريض</th><th>الخدمة</th><th>المعالج</th><th>المطلوب</th><th></th></tr></thead>
+          <tbody>
+            {list.slice(0,30).map(a=>(
+              <tr key={a.id}>
+                <td>{a.date} {a.time||''}</td>
+                <td style={{fontWeight:700}}>{pn(a)}</td>
+                <td>{a.service||'—'}</td>
+                <td>{aptTherName(a,patients)||'—'}</td>
+                <td><span className={'badge '+(docKindFor(a.service)==='record'?'badge-blue':'badge-orange')}>{docKindFor(a.service)==='record'?'🏥 سجل طبي':'🔄 متابعة جلسة'}</span></td>
+                <td><button className="btn btn-sm btn-accent" onClick={()=>setDoc(a)}>📝 توثيق الآن</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {doc && <DocPrompt apt={doc} direct onClose={()=>setDoc(null)}/>}
+    </div>
+  );
+}
+
 function Dashboard({navigate}){
   const {patients,appointments,records,sessions,finance,expenses,inventory,inbody,settings,services,updateAppointment,updateSettings} = useClinic();
   const [editReminder,setEditReminder] = useState(false);
   const [previewApt,setPreviewApt] = useState(null);
+  const [docApt,setDocApt] = useState(null);
   const todayStr = today();
   const todayApts = appointments.filter(a=>a.date===todayStr);
   const totalRev = finance.filter(f=>f.status==='مدفوع').reduce((s,f)=>s+(f.paid||0),0);
@@ -2197,6 +2320,7 @@ function Dashboard({navigate}){
       if(svc && svc.price>0) alert(`💰 تذكير: سعر «${svc.name}» المحدد في الخدمات والأسعار هو ${fmt(svc.price)} ${cur}. تأكد من تسجيل الدفعة المطابقة.`);
     }
     updateAppointment(a.id, {...a, status});
+    if(status==='completed' && docKindFor(a.service)) setDocApt({...a, status});
   };
   const remindApt = (a) => {
     const p = patients.find(x=>String(x.id)===String(a.patientId)) || {};
@@ -2396,6 +2520,8 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
         );
       })()}
 
+      <UndocumentedCard/>
+
       {tomorrowApts.length>0 && (
         <div className="card" style={{marginTop:20,borderTop:'3px solid #0891b2'}}>
           <div className="card-header">
@@ -2430,6 +2556,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
         </div>
       )}
 
+      {docApt && <DocPrompt apt={docApt} onClose={()=>setDocApt(null)}/>}
       {editReminder && (
         <ReminderTemplateModal
           value={settings.reminderTemplate || DEF_SETTINGS.reminderTemplate}
@@ -3571,7 +3698,7 @@ function InBodyPatientTab({patientId, patIb, openModal, deleteInbody, settings})
 // ══════════════════════════════════════════════════
 // MEDICAL RECORD MODAL — 4-Step Assessment
 // ══════════════════════════════════════════════════
-function RecordModal({patientId,record,onClose}){
+function RecordModal({patientId,record,onClose,prefill}){
   const {addRecord,updateRecord,categories,settings} = useClinic();
   const isEdit = !!record;
   const [step,setStep] = useState(1);
@@ -3584,6 +3711,7 @@ function RecordModal({patientId,record,onClose}){
     historyNotes:'', posture:'طبيعية', gait:'طبيعية',
     nextReview:'', therapistNotes:'', romNotes:'', mmtNotes:'',
     chronicConditions:[], medications:'',
+    ...(prefill||{}),
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const tg=(key,id)=>f(key,form[key].includes(id)?form[key].filter(x=>x!==id):[...form[key],id]);
@@ -3756,7 +3884,7 @@ function RecordModal({patientId,record,onClose}){
 // ══════════════════════════════════════════════════
 // SESSION MODAL — متابعة الجلسات
 // ══════════════════════════════════════════════════
-function SessionModal({patientId, patient, session, onClose}){
+function SessionModal({patientId, patient, session, onClose, prefill}){
   const {addSession, updateSession, categories, settings, services} = useClinic();
   const isEdit = !!session;
   const [form,setForm] = useState(session||{
@@ -3764,6 +3892,7 @@ function SessionModal({patientId, patient, session, onClose}){
     techniques:[], duration:60, vasStart:5, vasEnd:3,
     therapistName:settings.therapistName, notes:'', hep:'',
     paid:0, status:'completed', isFree:false,
+    ...(prefill||{}),
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const tg=(id)=>f('techniques',form.techniques.includes(id)?form.techniques.filter(x=>x!==id):[...form.techniques,id]);
@@ -3865,31 +3994,41 @@ function SessionModal({patientId, patient, session, onClose}){
 // APPOINTMENT MODAL
 // ══════════════════════════════════════════════════
 function AppointmentModal({patientId, patient, appointment, onClose}){
-  const {addAppointment, updateAppointment, patients, staff, settings, categories, services} = useClinic();
+  const {addAppointment, updateAppointment, patients, staff, settings, categories, services, appointments} = useClinic();
   const isEdit = !!appointment;
+  const [conflict,setConflict] = useState(null);   // {x, slots}
+  const [docAfter,setDocAfter] = useState(null);
   const [form,setForm] = useState(appointment||{
     patientId:patientId||'', patientName:patient?.name||'',
     date:today(), time:'10:00', service:'', status:'confirmed',
     notes:'', therapist:(patient?.assignedTherapist)||settings.therapistName,
   });
-  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const f=(k,v)=>{ setConflict(null); setForm(p=>({...p,[k]:v})); };
   const pickPatient=(pid)=>{
     const px = patients.find(x=>x.id===pid);
+    setConflict(null);
     setForm(p=>({...p, patientId:pid, patientName:px?.name||'', therapist:(px&&px.assignedTherapist)||p.therapist||settings.therapistName}));
   };
   const save=()=>{
     if(!form.date||!form.time){alert('التاريخ والوقت مطلوبان');return;}
     if(!form.patientId){alert('المريض مطلوب');return;}
     if(!form.service){alert('⚠️ يجب اختيار نوع الخدمة قبل حفظ الموعد.');return;}
+    const p = patients.find(x=>x.id===form.patientId);
+    const data={...form,patientName:p?.name||form.patientName,therapist:form.therapist||(p&&p.assignedTherapist)||settings.therapistName};
+    const probe = isEdit ? {...data, id:appointment.id} : data;
+    const x = findTherapistConflict(probe, appointments, services, patients);
+    if(x){ setConflict({x, slots: freeSlotsFor(probe, appointments, services, patients, 8)}); return; }
     if(canSeeFinance() && form.status==='completed'){
       const svc = (services||[]).find(s=>s.name===form.service);
       if(svc && svc.price>0) alert(`💰 تذكير: سعر «${svc.name}» المحدد في الخدمات والأسعار هو ${fmt(svc.price)} ${settings.currency}. تأكد من تسجيل الدفعة المطابقة.`);
     }
-    const p = patients.find(x=>x.id===form.patientId);
-    const data={...form,patientName:p?.name||form.patientName,therapist:form.therapist||(p&&p.assignedTherapist)||settings.therapistName};
-    if(isEdit) updateAppointment(appointment.id,data); else addAppointment({...data,id:nextId('APT')});
+    const saved = isEdit ? (updateAppointment(appointment.id,data), {...data,id:appointment.id}) : addAppointment({...data,id:nextId('APT')});
+    const becameDone = data.status==='completed' && !(isEdit && appointment.status==='completed');
+    if(becameDone && docKindFor(data.service)){ setDocAfter(saved); return; }
     onClose();
   };
+  if(docAfter) return <DocPrompt apt={docAfter} onClose={onClose}/>;
+  const xName = conflict ? (((patients.find(pp=>String(pp.id)===String(conflict.x.patientId))||{}).name) || conflict.x.patientName || '—') : '';
   return(
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()}>
@@ -3914,6 +4053,26 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
             <SF label="الحالة" value={form.status} onChange={v=>f('status',v)} options={['confirmed','pending','completed','cancelled','missed']}/>
           </div>
           <TA label="ملاحظات" value={form.notes} onChange={v=>f('notes',v)} rows={2}/>
+          {conflict && (
+            <div className="alert alert-danger" style={{marginTop:6}}>
+              <div style={{width:'100%'}}>
+                <div style={{fontWeight:800,marginBottom:4}}>⛔ لا يمكن الحجز — المعالج مشغول</div>
+                <div style={{fontSize:13}}>
+                  {aptTherName(form,patients)} لديه موعد مع <strong>{xName}</strong> ({conflict.x.service||'—'}) من {fromMin(conflict.x._start)} إلى {fromMin(conflict.x._end)}.
+                </div>
+                {conflict.slots.length>0 ? (
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:12.5,fontWeight:700,marginBottom:6}}>أقرب الأوقات الفارغة له يوم {form.date}:</div>
+                    <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                      {conflict.slots.map(t=>(
+                        <button key={t} type="button" className="btn btn-sm btn-outline" onClick={()=>f('time',t)}>🕐 {t}</button>
+                      ))}
+                    </div>
+                  </div>
+                ) : <div style={{fontSize:12.5,marginTop:6}}>لا توجد أوقات فارغة لهذا المعالج في هذا اليوم — اختر يوماً آخر أو معالجاً آخر.</div>}
+              </div>
+            </div>
+          )}
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>إلغاء</button>
@@ -4876,7 +5035,7 @@ ${forPrint?'<div class="noprint" style="text-align:center;margin:18px"><button o
 // CALENDAR
 // ══════════════════════════════════════════════════
 function CalendarPage(){
-  const {appointments, patients, staff, settings, updateSettings, sessions, addAppointment, updateAppointment, updatePatient} = useClinic();
+  const {appointments, patients, staff, settings, updateSettings, sessions, addAppointment, updateAppointment, updatePatient, services} = useClinic();
   const [month,setMonth] = useState(new Date());
   const [modal,setModal] = useState(null);
   const [pickFor,setPickFor] = useState(null);   // الموعد الملغى المفتوح في نافذة اختيار البديل
@@ -4947,8 +5106,15 @@ function CalendarPage(){
   };
   // حجز مباشر: ينشئ موعداً جديداً للمريض البديل في نفس الوقت ويُغلق الموعد الملغى
   const bookReplacement = (apt,p) => {
-    if(!confirm(`حجز موعد ${apt.date} الساعة ${apt.time} للمريض «${p.name}»؟`)) return;
     const ther = apt.therapist || p.assignedTherapist || settings.therapistName;
+    const probe = {patientId:p.id, date:apt.date, time:apt.time, service:apt.service||'', therapist:ther, status:'confirmed'};
+    const x = findTherapistConflict(probe, appointments, services, patients);
+    if(x){
+      const slots = freeSlotsFor(probe, appointments, services, patients, 6);
+      alert(`⛔ لا يمكن الحجز: ${ther} مشغول من ${fromMin(x._start)} إلى ${fromMin(x._end)}.` + (slots.length ? `\nأوقات فارغة له في نفس اليوم: ${slots.join('، ')}` : ''));
+      return;
+    }
+    if(!confirm(`حجز موعد ${apt.date} الساعة ${apt.time} للمريض «${p.name}»؟`)) return;
     const n = addAppointment({
       id:nextId('APT'), patientId:p.id, patientName:p.name, date:apt.date, time:apt.time,
       service:apt.service||'', therapist:ther, status:'confirmed',
@@ -9184,6 +9350,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       {id:'xray',      icon:'🩻', label:'مقارنة الأشعة'},
     ]},
     { section:'المتابعة والكادر', items:[
+      ...(STAFF_MODE ? [] : [{id:'therapists', icon:'🩺', label:'متابعة المعالجين'}]),
       ...(STAFF_MODE ? [] : [{id:'opsreport',  icon:'🗓️', label:'التقارير التشغيلية'}]),
       ...(STAFF_MODE ? [] : [{id:'attendance', icon:'🕐', label:'الحضور والانصراف'}]),
       {id:'tasks',      icon:'✅', label:'مهام الكادر'},
@@ -9208,7 +9375,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
     finance:'المالية', hep:'مكتبة التمارين', services:'الخدمات',
     inventory:'المخزون', analytics:'التحليل التنبئي', reports:'التقارير',
     xray:'مقارنة الأشعة', staff:'فريق العمل', audit:'سجل التعديلات', trash:'سلة المحذوفات',
-    opsreport:'التقارير التشغيلية', attendance:'الحضور والانصراف', tasks:'مهام الكادر',
+    therapists:'متابعة المعالجين', opsreport:'التقارير التشغيلية', attendance:'الحضور والانصراف', tasks:'مهام الكادر',
     categories:'الفئات', settings:'الإعدادات', users:'إدارة المستخدمين',
   };
 
@@ -9597,11 +9764,283 @@ function AttendancePage(){
 // ══════════════════════════════════════════════════
 // مركز مهام الكادر + مرضى المعالج اليوم
 // ══════════════════════════════════════════════════
+// ══════════════════════════════════════════════════
+// 🩺 متابعة المعالجين — مرضى كل معالج، جدوله الأسبوعي، الحضور، التوثيق، والتقرير الأسبوعي
+// ══════════════════════════════════════════════════
+const WEEK_DAYS_AR = ['السبت','الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة'];
+function TherapistTrackingPage(){
+  const {staff, patients, appointments, sessions, records, services, settings} = useClinic();
+  const cur = settings.currency || 'ل.س';
+  const iso = (x)=>{ const m=x.getMonth()+1, d=x.getDate(); return x.getFullYear()+'-'+(m<10?'0':'')+m+'-'+(d<10?'0':'')+d; };
+  const todayStr = today();
+  const [anchor,setAnchor] = useState(todayStr);
+  const [doc,setDoc] = useState(null);
+  const wk = (()=>{
+    const d = new Date(anchor+'T00:00:00');
+    const st = new Date(d); st.setDate(d.getDate()-((d.getDay()+1)%7));
+    const days = Array.from({length:7},(_,i)=>{ const x=new Date(st); x.setDate(st.getDate()+i); return iso(x); });
+    return {from:days[0], to:days[6], days};
+  })();
+  const shiftWeek = (dir)=>{ const d=new Date(anchor+'T00:00:00'); d.setDate(d.getDate()+7*dir); setAnchor(iso(d)); };
+
+  const activeStaff = (staff||[]).filter(s=>s.status!=='متوقف' && s.name);
+  const bookedNames = new Set(appointments.map(a=>normName(aptTherName(a,patients))).filter(Boolean));
+  let therapists = activeStaff.filter(s=>String(s.role||'').includes('معالج') || bookedNames.has(normName(s.name))).map(s=>s.name);
+  if(therapists.length===0) therapists = activeStaff.map(s=>s.name);
+  const [sel,setSel] = useState(therapists[0]||'');
+  const same = (a,b)=> normName(a)===normName(b);
+
+  const d30 = (()=>{ const d=new Date(); d.setDate(d.getDate()-30); return iso(d); })();
+  const lastSes = {};
+  (sessions||[]).forEach(s=>{ if(s.patientId && (!lastSes[s.patientId] || s.date>lastSes[s.patientId])) lastSes[s.patientId]=s.date; });
+  const liveApt = (a)=> a.status!=='cancelled' && a.status!=='missed';
+  const futureApt = new Set(appointments.filter(a=>liveApt(a) && a.date>=todayStr).map(a=>String(a.patientId)));
+  const recentApt = new Set(appointments.filter(a=>liveApt(a) && a.date>=d30 && a.date<=todayStr).map(a=>String(a.patientId)));
+
+  const statsFor = (ther)=>{
+    const mine = patients.filter(p=>p.status==='نشط' && same(p.assignedTherapist, ther));
+    const active = mine.filter(p=> (lastSes[p.id]||'')>=d30 || recentApt.has(String(p.id)) || futureApt.has(String(p.id)));
+    const needFollow = mine.filter(p=>!futureApt.has(String(p.id)))
+      .map(p=>({...p, last:lastSes[p.id]||'', days: lastSes[p.id] ? Math.floor((Date.now()-new Date(lastSes[p.id]).getTime())/86400000) : null}))
+      .sort((a,b)=>(b.days??9999)-(a.days??9999));
+    const wApts = appointments.filter(a=>a.date>=wk.from && a.date<=wk.to && same(aptTherName(a,patients), ther))
+      .sort((a,b)=>(a.date+(a.time||'')).localeCompare(b.date+(b.time||'')));
+    const done = wApts.filter(a=>a.status==='completed').length;
+    const missed = wApts.filter(a=>a.status==='missed').length;
+    const cancelled = wApts.filter(a=>a.status==='cancelled').length;
+    const upcoming = wApts.filter(a=>a.status==='confirmed'||a.status==='pending').length;
+    const bookedMin = wApts.filter(liveApt).reduce((t,a)=>t+svcDuration(services,a.service),0);
+    const capacityMin = 6 * (SLOT_DAY_END-SLOT_DAY_START);           // 6 أيام عمل (بدون الجمعة)
+    const wSes = (sessions||[]).filter(s=>s.date>=wk.from && s.date<=wk.to && same(s.therapistName, ther));
+    const collected = wSes.reduce((t,s)=>t+(Number(s.paid)||0),0);
+    const expected = wSes.filter(s=>!s.isFree).reduce((t,s)=>t+(Number(((services||[]).find(v=>v.name===s.type)||{}).price)||0),0);
+    const undoc = wApts.filter(a=>a.status==='completed' && a.date<=todayStr && !isAptDocumented(a,sessions,records));
+    const attRate = (done+missed)>0 ? Math.round(done/(done+missed)*100) : null;
+    return {ther, mine, active, needFollow, wApts, done, missed, cancelled, upcoming, bookedMin, occupancy: Math.round(bookedMin/capacityMin*100),
+            wSes, collected, expected, undoc, attRate};
+  };
+  const all = therapists.map(statsFor);
+  const st = all.find(x=>same(x.ther, sel)) || (sel ? statsFor(sel) : null);
+  const pn = (a)=> ((patients.find(p=>String(p.id)===String(a.patientId))||{}).name) || a.patientName || '—';
+  const stColor = {completed:'#059669',confirmed:'#2563eb',pending:'#d97706',missed:'#dc2626',cancelled:'#6b7280'};
+  const stLabel = {completed:'حضر',confirmed:'مؤكد',pending:'معلّق',missed:'غاب',cancelled:'ملغى'};
+  const hours = []; for(let h=8; h<=21; h++) hours.push(h);
+  const wa = (p)=>{
+    let ph=String(p.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
+    if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
+    const msg=`مرحباً ${p.name} 🌿\nنتمنى أن تكون بخير. حان موعد متابعة جلساتك مع ${sel} في ${settings.clinicName||'Motion Clinic'}.\nيسعدنا حجز موعدك القادم — راسلنا بالوقت المناسب لك 🙏`;
+    window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg),'_blank');
+  };
+
+  const printWeek = ()=>{
+    if(!st) return;
+    const w = window.open('','_blank'); if(!w){ alert('فعّل النوافذ المنبثقة لعرض التقرير.'); return; }
+    const tr = (c)=>'<tr>'+c.map(x=>`<td>${x}</td>`).join('')+'</tr>';
+    const esc = (x)=>String(x==null?'':x).replace(/[<>&]/g,'');
+    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير أسبوعي — ${esc(st.ther)}</title>
+<style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:26px;color:#1e293b;max-width:900px;margin:auto}
+.h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:20px;border-radius:14px;margin-bottom:16px}.h h1{font-size:20px}.h p{opacity:.9;font-size:13px;margin-top:4px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}.c{border:1px solid #e2e8f0;border-radius:10px;padding:10px;text-align:center}.c .v{font-size:17px;font-weight:800}.c .l{font-size:11px;color:#64748b}
+h2{font-size:14.5px;color:#0B3D5C;border-right:4px solid #B8893A;padding-right:10px;margin:18px 0 8px}
+table{width:100%;border-collapse:collapse}td,th{padding:6px 9px;border:1px solid #e2e8f0;font-size:12px;text-align:right}th{background:#f8fafc}
+.foot{margin-top:22px;text-align:center;font-size:11.5px;color:#94a3b8}</style></head><body>
+<div class="h"><h1>🩺 التقرير الأسبوعي — ${esc(st.ther)}</h1><p>${esc(settings.clinicName||'Motion Clinic')} • الأسبوع ${wk.from} → ${wk.to} • صدر ${new Date().toLocaleDateString('ar-EG')}</p></div>
+<div class="cards">
+<div class="c"><div class="v">${st.active.length}</div><div class="l">مرضى نشطون</div></div>
+<div class="c"><div class="v">${st.wApts.length}</div><div class="l">مواعيد الأسبوع</div></div>
+<div class="c"><div class="v">${st.attRate==null?'—':st.attRate+'%'}</div><div class="l">نسبة الحضور</div></div>
+<div class="c"><div class="v">${st.occupancy}%</div><div class="l">امتلاء الجدول</div></div>
+</div>
+<h2>الملخّص</h2><table>
+${tr(['حضر', st.done])}${tr(['غاب', st.missed])}${tr(['ملغى', st.cancelled])}${tr(['قادم / لم يُحسم', st.upcoming])}
+${tr(['جلسات مسجّلة', st.wSes.length])}${tr(['ساعات محجوزة', (st.bookedMin/60).toFixed(1)])}${tr(['مواعيد بحاجة توثيق', st.undoc.length])}
+${isAdminUser()?tr(['القيمة حسب الأسعار', fmt(st.expected)+' '+cur])+tr(['المحصّل من الجلسات', fmt(st.collected)+' '+cur]):''}
+</table>
+<h2>مواعيد الأسبوع</h2><table><tr><th>اليوم</th><th>الوقت</th><th>المريض</th><th>الخدمة</th><th>الحالة</th></tr>
+${st.wApts.map(a=>tr([WEEK_DAYS_AR[wk.days.indexOf(a.date)]+' '+a.date, a.time||'', esc(pn(a)), esc(a.service||'—'), stLabel[a.status]||a.status])).join('')||'<tr><td colspan=5 style="text-align:center;color:#888">لا مواعيد</td></tr>'}
+</table>
+<h2>المرضى النشطون (${st.active.length})</h2><table><tr><th>المريض</th><th>الهاتف</th><th>آخر جلسة</th><th>موعد قادم</th></tr>
+${st.active.map(p=>tr([esc(p.name), esc(p.phone||'—'), lastSes[p.id]||'—', futureApt.has(String(p.id))?'✔':'—'])).join('')||'<tr><td colspan=4 style="text-align:center;color:#888">—</td></tr>'}
+</table>
+<h2>مرضى يحتاجون متابعة (${st.needFollow.length})</h2><table><tr><th>المريض</th><th>الهاتف</th><th>آخر جلسة</th></tr>
+${st.needFollow.map(p=>tr([esc(p.name), esc(p.phone||'—'), p.last ? p.last+' (قبل '+p.days+' يوم)' : 'لا جلسات'])).join('')||'<tr><td colspan=3 style="text-align:center;color:#888">لا أحد</td></tr>'}
+</table>
+${st.undoc.length?`<h2>مواعيد حضرت بلا توثيق (${st.undoc.length})</h2><table><tr><th>التاريخ</th><th>المريض</th><th>الخدمة</th><th>المطلوب</th></tr>
+${st.undoc.map(a=>tr([a.date, esc(pn(a)), esc(a.service||'—'), docKindFor(a.service)==='record'?'سجل طبي':'متابعة جلسة'])).join('')}</table>`:''}
+<div class="foot">Motion Clinic — تقرير آلي</div>
+<script>setTimeout(()=>window.print(),600)<\/script></body></html>`);
+    w.document.close();
+  };
+
+  if(therapists.length===0){
+    return <div className="page-content"><div className="empty-state" style={{padding:40}}><div className="icon">🩺</div><h3>لا يوجد معالجون</h3><p>أضِف المعالجين من صفحة «فريق العمل» أولاً.</p></div></div>;
+  }
+  return(
+    <div className="page-content">
+      <div className="page-header">
+        <div><h1 className="page-title">🩺 متابعة المعالجين</h1><p className="page-subtitle">الأسبوع {wk.from} → {wk.to}</p></div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn btn-sm" onClick={()=>shiftWeek(-1)}>‹ الأسبوع السابق</button>
+          <button className="btn btn-sm" onClick={()=>setAnchor(todayStr)}>هذا الأسبوع</button>
+          <button className="btn btn-sm" onClick={()=>shiftWeek(1)}>الأسبوع التالي ›</button>
+        </div>
+      </div>
+
+      {/* نظرة عامة على كل المعالجين */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h3>📊 مقارنة المعالجين هذا الأسبوع</h3></div>
+        <div style={{overflowX:'auto'}}>
+          <table className="data-table">
+            <thead><tr><th>المعالج</th><th>مرضى نشطون</th><th>مواعيد</th><th>حضر</th><th>غاب/ألغى</th><th>نسبة الحضور</th><th>جلسات</th><th>امتلاء</th><th>بلا توثيق</th>{isAdminUser()&&<th>القيمة</th>}</tr></thead>
+            <tbody>
+              {all.map(x=>(
+                <tr key={x.ther} onClick={()=>setSel(x.ther)} style={{cursor:'pointer',background:same(x.ther,sel)?'var(--primary-bg)':undefined}}>
+                  <td style={{fontWeight:800}}>{x.ther}</td><td>{x.active.length}</td><td>{x.wApts.length}</td>
+                  <td style={{color:'#059669',fontWeight:700}}>{x.done}</td><td style={{color:'#dc2626',fontWeight:700}}>{x.missed+x.cancelled}</td>
+                  <td>{x.attRate==null?'—':x.attRate+'%'}</td><td>{x.wSes.length}</td><td>{x.occupancy}%</td>
+                  <td style={{color:x.undoc.length?'var(--orange)':'var(--text-light)',fontWeight:700}}>{x.undoc.length}</td>
+                  {isAdminUser()&&<td>{fmt(x.expected)} {cur}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* اختيار المعالج */}
+      <div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center',marginBottom:14}}>
+        {therapists.map(t=>(
+          <button key={t} onClick={()=>setSel(t)} className={`btn btn-sm ${same(t,sel)?'btn-primary':'btn-ghost'}`}>👨‍⚕️ {t}</button>
+        ))}
+        <button className="btn btn-accent btn-sm" style={{marginRight:'auto'}} onClick={printWeek}>🖨️ طباعة التقرير الأسبوعي</button>
+      </div>
+
+      {st && (<>
+        <div className="stats-grid" style={{gridTemplateColumns:'repeat(4,1fr)'}}>
+          {[
+            ['👥 مرضى نشطون', st.active.length, 'var(--primary)', 'من '+st.mine.length+' مسؤول عنهم'],
+            ['📅 مواعيد الأسبوع', st.wApts.length, 'var(--blue)', 'حضر '+st.done+' · غاب '+st.missed+' · ألغى '+st.cancelled],
+            ['✅ نسبة الحضور', st.attRate==null?'—':st.attRate+'%', 'var(--green)', 'جلسات مسجّلة: '+st.wSes.length],
+            ['⏱️ امتلاء الجدول', st.occupancy+'%', 'var(--accent)', (st.bookedMin/60).toFixed(1)+' ساعة محجوزة'],
+          ].map(([l,v,c,sub],i)=>(
+            <div key={i} className="stat-card"><div className="stat-content">
+              <h3 style={{color:c,fontSize:18}}>{v}</h3><p>{l}</p>
+              <span style={{fontSize:11,color:'var(--text-light)',fontWeight:700}}>{sub}</span>
+            </div></div>
+          ))}
+        </div>
+        {isAdminUser() && (
+          <div className="stats-grid" style={{gridTemplateColumns:'repeat(2,1fr)'}}>
+            <div className="stat-card"><div className="stat-content"><h3 style={{color:'var(--purple)',fontSize:18}}>{fmt(st.expected)} {cur}</h3><p>💼 قيمة الجلسات حسب الأسعار</p></div></div>
+            <div className="stat-card"><div className="stat-content"><h3 style={{color:'var(--green)',fontSize:18}}>{fmt(st.collected)} {cur}</h3><p>💰 المحصّل من جلسات الأسبوع</p></div></div>
+          </div>
+        )}
+
+        {/* جدول الأسبوع */}
+        <div className="card" style={{marginTop:16}}>
+          <div className="card-header"><h3>🗓️ جدول الأسبوع — {st.ther}</h3></div>
+          <div style={{overflowX:'auto',padding:12}}>
+            <table style={{borderCollapse:'collapse',width:'100%',minWidth:760,fontSize:12}}>
+              <thead><tr>
+                <th style={{padding:6,border:'1px solid var(--border)',background:'var(--surface)'}}>الساعة</th>
+                {wk.days.map((d,i)=>(
+                  <th key={d} style={{padding:6,border:'1px solid var(--border)',background:d===todayStr?'var(--accent-light,#fff7e6)':'var(--surface)'}}>{WEEK_DAYS_AR[i]}<br/><span style={{fontWeight:400,fontSize:11}}>{d.slice(5)}</span></th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {hours.map(h=>(
+                  <tr key={h}>
+                    <td style={{padding:6,border:'1px solid var(--border)',fontWeight:700,textAlign:'center'}}>{String(h).padStart(2,'0')}:00</td>
+                    {wk.days.map(d=>{
+                      const cell = st.wApts.filter(a=>a.date===d && Math.floor((toMin(a.time)??-1)/60)===h);
+                      const covered = !cell.length && st.wApts.some(a=>{ if(a.date!==d || !liveApt(a)) return false; const s=toMin(a.time); if(s==null) return false; const e=s+svcDuration(services,a.service); return s<h*60 && e>h*60; });
+                      return (
+                        <td key={d} style={{padding:4,border:'1px solid var(--border)',verticalAlign:'top',background:covered?'#eef2ff':undefined,minWidth:96}}>
+                          {cell.map(a=>(
+                            <div key={a.id} title={a.service||''} style={{borderRight:'3px solid '+(stColor[a.status]||'#888'),background:(stColor[a.status]||'#888')+'14',borderRadius:6,padding:'3px 6px',marginBottom:3}}>
+                              <div style={{fontWeight:800}}>{a.time} {pn(a)}</div>
+                              <div style={{fontSize:10.5,color:'var(--text-light)'}}>{a.service||'—'} · {stLabel[a.status]||a.status}</div>
+                            </div>
+                          ))}
+                          {covered && <div style={{fontSize:10.5,color:'#6366f1'}}>مشغول</div>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="grid-2" style={{marginTop:16}}>
+          {/* المرضى النشطون */}
+          <div className="card">
+            <div className="card-header"><h3>👥 المرضى النشطون ({st.active.length})</h3></div>
+            <div style={{maxHeight:380,overflowY:'auto'}}>
+              <table className="data-table">
+                <thead><tr><th>المريض</th><th>آخر جلسة</th><th>موعد قادم</th></tr></thead>
+                <tbody>
+                  {st.active.map(p=>(
+                    <tr key={p.id}><td style={{fontWeight:700}}>{p.name}</td><td>{lastSes[p.id]||'—'}</td><td>{futureApt.has(String(p.id))?<span className="badge badge-green">✔</span>:<span className="badge badge-orange">لا</span>}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+              {st.active.length===0 && <div className="empty-state" style={{padding:20}}><p>لا مرضى نشطين لهذا المعالج.</p></div>}
+            </div>
+          </div>
+          {/* مرضى يحتاجون متابعة */}
+          <div className="card">
+            <div className="card-header"><h3>📞 مرضى يحتاجون متابعة ({st.needFollow.length})</h3></div>
+            <div style={{maxHeight:380,overflowY:'auto'}}>
+              <table className="data-table">
+                <thead><tr><th>المريض</th><th>آخر جلسة</th><th></th></tr></thead>
+                <tbody>
+                  {st.needFollow.map(p=>(
+                    <tr key={p.id}>
+                      <td style={{fontWeight:700}}>{p.name}</td>
+                      <td style={{fontSize:12}}>{p.last ? `${p.last} (قبل ${p.days} يوم)` : 'لا جلسات'}</td>
+                      <td><button className="btn btn-sm btn-outline" onClick={()=>wa(p)}>📱 دعوة</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {st.needFollow.length===0 && <div className="empty-state" style={{padding:20}}><p>كل مرضاه لديهم مواعيد قادمة 👍</p></div>}
+            </div>
+          </div>
+        </div>
+
+        {/* بلا توثيق */}
+        {st.undoc.length>0 && (
+          <div className="card" style={{marginTop:16,borderTop:'3px solid var(--orange)'}}>
+            <div className="card-header"><h3>📝 مواعيد حضرت بلا توثيق هذا الأسبوع ({st.undoc.length})</h3></div>
+            <table className="data-table">
+              <thead><tr><th>التاريخ</th><th>المريض</th><th>الخدمة</th><th>المطلوب</th><th></th></tr></thead>
+              <tbody>
+                {st.undoc.map(a=>(
+                  <tr key={a.id}>
+                    <td>{a.date} {a.time||''}</td><td style={{fontWeight:700}}>{pn(a)}</td><td>{a.service||'—'}</td>
+                    <td>{docKindFor(a.service)==='record'?'🏥 سجل طبي':'🔄 متابعة جلسة'}</td>
+                    <td><button className="btn btn-sm btn-accent" onClick={()=>setDoc(a)}>📝 توثيق</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </>)}
+      {doc && <DocPrompt apt={doc} direct onClose={()=>setDoc(null)}/>}
+    </div>
+  );
+}
+
 function TaskCenterPage(){
   const {tasks,addTask,updateTask,deleteTask,staff,appointments,patients,settings,services,updateAppointment} = useClinic();
   const [role,setRole] = useState(localStorage.getItem('mc_role')||'physio');
   const [myName,setMyName] = useState(localStorage.getItem('mc_staff_name')||'');
   const [period,setPeriod] = useState('daily');
+  const [docApt,setDocApt] = useState(null);
   const [newTask,setNewTask] = useState('');
   const [assignMine,setAssignMine] = useState(true);
   const isAdmin = !STAFF_MODE;
@@ -9660,6 +10099,7 @@ function TaskCenterPage(){
       if(svc && svc.price>0) alert(`💰 تذكير: سعر «${svc.name}» المحدد في الخدمات والأسعار هو ${fmt(svc.price)} ${settings.currency}. تأكد من تسجيل الدفعة المطابقة.`);
     }
     updateAppointment(a.id,{...a,status});
+    if(status==='completed' && docKindFor(a.service)) setDocApt({...a,status});
   };
   const roleObj = TASK_ROLES.find(r=>r.key===role)||{};
 
@@ -9767,7 +10207,9 @@ function TaskCenterPage(){
             )}
           </div>
         </div>
+        {myName && <UndocumentedCard onlyTherapist={myName}/>}
       </div>
+      {docApt && <DocPrompt apt={docApt} onClose={()=>setDocApt(null)}/>}
     </div>
   );
 }
@@ -10255,6 +10697,7 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'xray':       return <XRayPage navigate={navigate}/>;
     case 'notes':      return <NotesPage/>;
     case 'staff':      return STAFF_MODE ? <Dashboard navigate={navigate}/> : <StaffPage/>;
+    case 'therapists': return STAFF_MODE ? <Dashboard navigate={navigate}/> : <TherapistTrackingPage/>;
     case 'opsreport':  return STAFF_MODE ? <Dashboard navigate={navigate}/> : <OpsReportPage/>;
     case 'attendance': return STAFF_MODE ? <Dashboard navigate={navigate}/> : <AttendancePage/>;
     case 'tasks':      return <TaskCenterPage/>;
