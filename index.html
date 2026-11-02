@@ -1751,6 +1751,7 @@ function ClinicProvider({ children }) {
       ['المرضى',patients],['السجلات',records],['الجلسات',sessions],['المواعيد',appointments],
       ['الفواتير',finance],['المصروفات',expenses],['InBody',inbody],['الملاحظات',notes],
       ['فريق العمل',staff],['المخزون',inventory],['الحضور',attendance],['المهام',tasks],
+      ['الخدمات والأسعار',services],['مكتبة التمارين',hepLib],
     ];
     const sheets = secs.map(([name,rows])=>{
       const list = (rows||[]).filter(r=>r && !r.deleted);
@@ -2521,6 +2522,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
       })()}
 
       <UndocumentedCard/>
+      <WebFollowupCard navigate={navigate}/>
 
       {tomorrowApts.length>0 && (
         <div className="card" style={{marginTop:20,borderTop:'3px solid #0891b2'}}>
@@ -2956,6 +2958,7 @@ function PatientProfile({patientId, navigate}){
     ['sessions','🔄 متابعة الجلسات'],['appointments','📅 المواعيد'],
     ...(canSeeFinance() ? [['finance','💰 المالية']] : []),
     ['inbody','⚖️ InBody'],['notes','📝 الملاحظات'],['files','📎 الملفات والمرفقات'],
+    ['portal','📱 متابعة الموقع'],
   ];
 
   const exportPDF = async () => {
@@ -2988,6 +2991,7 @@ function PatientProfile({patientId, navigate}){
           <div style={{display:'flex',flexDirection:'column',gap:8,flexShrink:0}}>
             <button className="btn btn-accent btn-sm" onClick={()=>setEditPatient(true)}>✏️ تعديل</button>
             <button className="btn btn-secondary btn-sm" onClick={exportPDF}>📄 PDF</button>
+            <PortalCodeButton patient={patient}/>
             <button className="btn btn-ghost btn-sm" style={{color:'rgba(255,255,255,0.7)'}} onClick={()=>navigate('patients')}>← قائمة</button>
           </div>
         </div>
@@ -3326,6 +3330,7 @@ function PatientProfile({patientId, navigate}){
         )}
 
         {tab==='files' && <FileAttachments patient={patient}/>}
+        {tab==='portal' && <PatientPortalTab patient={patient}/>}
         </div>{/* end pdf-content */}
       </div>
 
@@ -7829,6 +7834,7 @@ function SettingsPage(){
 
       {tab==='backup'&&(
         <div>
+          <ServerBackupsCard/>
           {/* Supabase Sync Card */}
           <div className="card" style={{marginBottom:16,border:'2px solid var(--primary-pale)'}}>
             <div className="card-header" style={{background:'var(--primary-bg)'}}>
@@ -9317,6 +9323,8 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
   const {patients, settings, appointments, inventory, sessions} = useClinic();
   const todayApts = appointments.filter(a=>a.date===today());
   const lowStock  = inventory.filter(i=>i.quantity<=i.minLevel);
+  const webCounts = useWebCounts();
+  const webPending = canManageWebsite() ? appointments.filter(a=>isWebBooking(a) && a.status==='pending').length + webCounts.unread : 0;
 
   const navigate = useCallback((page, id=null) => {
     setCurrentPage(page);
@@ -9359,6 +9367,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
       ...(STAFF_MODE ? [] : [{id:'staff', icon:'👨‍⚕️', label:'فريق العمل'}]),
       ...(STAFF_MODE ? [] : [{id:'audit', icon:'🔒',  label:'سجل التعديلات'}]),
       ...(STAFF_MODE ? [] : [{id:'trash', icon:'🗑️', label:'سلة المحذوفات'}]),
+      ...(isAdminUser() && !STAFF_MODE ? [{id:'website', icon:'🌐', label:'الموقع الرسمي', badge: webPending||null}] : []),
       ...(isAdminUser() && !STAFF_MODE ? [{id:'users', icon:'🔐', label:'إدارة المستخدمين'}] : []),
     ]},
     { section:'النظام', items:[
@@ -9375,7 +9384,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
     finance:'المالية', hep:'مكتبة التمارين', services:'الخدمات',
     inventory:'المخزون', analytics:'التحليل التنبئي', reports:'التقارير',
     xray:'مقارنة الأشعة', staff:'فريق العمل', audit:'سجل التعديلات', trash:'سلة المحذوفات',
-    therapists:'متابعة المعالجين', opsreport:'التقارير التشغيلية', attendance:'الحضور والانصراف', tasks:'مهام الكادر',
+    therapists:'متابعة المعالجين', website:'الموقع الرسمي', opsreport:'التقارير التشغيلية', attendance:'الحضور والانصراف', tasks:'مهام الكادر',
     categories:'الفئات', settings:'الإعدادات', users:'إدارة المستخدمين',
   };
 
@@ -9462,6 +9471,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
         </header>
 
         <div className="content-area">
+          <WebBookingAlert/>
           <AppErrorBoundary key={currentPage+'|'+(patientId||'')} inline>
             <PageRouter
               currentPage={currentPage}
@@ -10677,6 +10687,759 @@ function SetNewPasswordScreen({onDone}){
 }
 
 // ══════════════════════════════════════════════════
+// ☁️ النسخ الاحتياطية اليومية على الخادم (تُنشأ كل ليلة 2:00 بتوقيت دمشق وتُحفظ 30 يوماً) — للمدير
+// ══════════════════════════════════════════════════
+async function readServerBackup(file){
+  const { data, error } = await _supaClient.storage.from('mc-backups').download(file);
+  if(error) throw error;
+  const stream = data.stream().pipeThrough(new DecompressionStream('gzip'));
+  return JSON.parse(await new Response(stream).text());
+}
+const BACKUP_SECTION_MAP = { mc_patients:'patients', mc_records:'records', mc_sessions:'sessions', mc_appointments:'appointments',
+  mc_finance:'finance', mc_expenses:'expenses', mc_inbody:'inbody', mc_notes:'notes', mc_staff:'staff', mc_inventory:'inventory', mc_hep:'hepLib' };
+function ServerBackupsCard(){
+  const {mergeImport, showToast} = useClinic();
+  const [rows,setRows] = useState(null);
+  const [busy,setBusy] = useState('');
+  const load = async()=>{ const {data,error} = await _supaClient.from('mc_backup_log').select('*').order('created_at',{ascending:false}).limit(40); setRows(error?[]:(data||[])); };
+  useEffect(()=>{ if(isAdminUser() && !STAFF_MODE) load(); }, []);
+  if(!isAdminUser() || STAFF_MODE) return null;
+  const runNow = async()=>{
+    setBusy('run');
+    try{
+      const r = await fetch(SUPABASE_URL + '/functions/v1/daily-backup', { method:'POST', headers:{'Authorization': await aiAuthHeader(), 'apikey': SUPABASE_KEY, 'Content-Type':'application/json'}, body:'{}' });
+      const d = await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(d.detail || d.error || ('HTTP '+r.status));
+      showToast('✅ تم إنشاء نسخة احتياطية على الخادم ('+Math.round(d.size/1024)+' KB)');
+    }catch(e){ alert('تعذّر إنشاء النسخة: '+e.message); }
+    setBusy(''); load();
+  };
+  const download = async(row)=>{
+    setBusy('dl'+row.id);
+    try{
+      const j = await readServerBackup(row.file);
+      const blob = new Blob([JSON.stringify(j, null, 1)], {type:'application/json'});
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = 'MotionClinic_server_backup_' + (j.day||'') + '.json'; a.click();
+    }catch(e){ alert('تعذّر التنزيل: '+e.message); }
+    setBusy('');
+  };
+  const restore = async(row)=>{
+    if(!confirm(`استرجاع آمن من نسخة ${new Date(row.created_at).toLocaleString('ar-EG')}؟\n\nيُضيف أي سجل مفقود ويحدّث السجلات الأقدم فقط — لا يحذف ولا يستبدل أي بيانات أحدث.`)) return;
+    setBusy('rs'+row.id);
+    try{
+      const j = await readServerBackup(row.file);
+      const sections = {};
+      for(const [tbl, key] of Object.entries(BACKUP_SECTION_MAP)){
+        sections[key] = (j.tables?.[tbl]||[]).map(_normRow).filter(r=>r && !r.deleted);
+      }
+      const res = await mergeImport(sections);
+      alert(`✅ تم الاسترجاع: ${res.added} سجل مضاف · ${res.updated} محدَّث · ${res.skipped} دون تغيير`);
+    }catch(e){ alert('تعذّر الاسترجاع: '+e.message); }
+    setBusy('');
+  };
+  const last = (rows||[]).find(r=>r.ok);
+  return(
+    <div className="card" style={{marginBottom:16,borderTop:'3px solid var(--green)'}}>
+      <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+        <h3 style={{flex:1}}>☁️ النسخ الاحتياطية اليومية على الخادم</h3>
+        <button className="btn btn-sm btn-accent" onClick={runNow} disabled={!!busy}>{busy==='run'?'⏳ جارٍ النسخ...':'☁️ نسخة احتياطية الآن'}</button>
+      </div>
+      <div className="card-body">
+        <div style={{fontSize:13,color:'var(--text-mid)',marginBottom:10,lineHeight:1.8}}>
+          تُنشأ تلقائياً كل ليلة الساعة 2:00 بتوقيت دمشق وتُحفظ آخر 30 يوماً في مخزن خاص لا يصل إليه إلا المدير.
+          {last && <> آخر نسخة ناجحة: <strong>{new Date(last.created_at).toLocaleString('ar-EG')}</strong>.</>}
+        </div>
+        {rows===null ? <div style={{fontSize:13}}>⏳ جارٍ التحميل...</div> : (
+          <div style={{maxHeight:280,overflowY:'auto'}}>
+            <table className="data-table">
+              <thead><tr><th>الوقت</th><th>النوع</th><th>الحجم</th><th>المرضى</th><th>المواعيد</th><th>الحالة</th><th></th></tr></thead>
+              <tbody>{rows.map(r=>(
+                <tr key={r.id}>
+                  <td style={{fontSize:12}}>{new Date(r.created_at).toLocaleString('ar-EG')}</td>
+                  <td>{r.trigger==='daily'?'🌙 تلقائية':'👆 يدوية'}</td>
+                  <td>{r.size_bytes?Math.round(r.size_bytes/1024)+' KB':'—'}</td>
+                  <td>{r.row_counts?.mc_patients??'—'}</td>
+                  <td>{r.row_counts?.mc_appointments??'—'}</td>
+                  <td>{r.ok?<span className="badge badge-green">✓ ناجحة</span>:<span className="badge badge-red" title={r.error||''}>✗ فشلت</span>}</td>
+                  <td style={{whiteSpace:'nowrap'}}>{r.ok && <>
+                    <button className="btn btn-sm btn-outline" disabled={!!busy} onClick={()=>download(r)}>{busy==='dl'+r.id?'⏳':'⬇️ تنزيل'}</button>{' '}
+                    <button className="btn btn-sm btn-ghost" disabled={!!busy} onClick={()=>restore(r)}>{busy==='rs'+r.id?'⏳':'↩️ استرجاع'}</button>
+                  </>}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+            {rows.length===0 && <div className="empty-state" style={{padding:20}}><p>لا نسخ بعد.</p></div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
+// 🌐 الموقع الرسمي (motion-center.netlify.app) — للمدير فقط في ملف الإدارة
+// الموقع لا يصل لقاعدة البيانات إلا عبر دالة portal الآمنة؛ هنا تُدار حجوزاته ورموز دخول المرضى وإعداداته.
+// ══════════════════════════════════════════════════
+const PORTAL_SITE = 'https://motion-center.netlify.app';
+const phoneKey9 = (p)=> String(p||'').replace(/\D/g,'').slice(-9);
+const portalLink = (phone)=> PORTAL_SITE + '/p/0' + phoneKey9(phone);
+const waLink = (phone, text)=> { const k=phoneKey9(phone); return k.length===9 ? 'https://wa.me/963'+k+'?text='+encodeURIComponent(text) : ''; };
+const canManageWebsite = ()=> !STAFF_MODE && isAdminUser();
+const isWebBooking = (a)=> a && (a.source==='website' || String(a.id||'').startsWith('WEB-'));
+function mcBeep(){
+  try{
+    const c=new (window.AudioContext||window.webkitAudioContext)(); const o=c.createOscillator(); const g=c.createGain();
+    o.frequency.value=880; o.connect(g); g.connect(c.destination); g.gain.setValueAtTime(0.15,c.currentTime);
+    o.start(); o.stop(c.currentTime+0.3);
+  }catch(e){}
+}
+
+// نافذة الرمز بعد إصداره: الرمز + الرابط الشخصي + إرسال واتساب
+function PortalCodeResult({patient, code, onClose}){
+  const link = portalLink(patient.phone);
+  const text = `مرحباً ${patient.name} 🌿\nيمكنك الآن متابعة ملفك العلاجي في مركز الحركة (التشخيص، الجلسات، المواعيد والتمارين):\n${link}\nرمز الدخول: ${code}\n\nلا تشارك الرمز مع أحد.`;
+  const wa = waLink(patient.phone, text);
+  const copy = async()=>{ try{ await navigator.clipboard.writeText(text); alert('✅ تم النسخ'); }catch(e){ alert(text); } };
+  return(
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+        <div className="modal-header"><h2>🔑 رمز دخول الموقع — {patient.name}</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-body" style={{textAlign:'center'}}>
+          <div style={{fontSize:13,color:'var(--text-mid)'}}>رمز الدخول (يظهر مرة واحدة فقط)</div>
+          <div dir="ltr" style={{fontSize:34,fontWeight:900,letterSpacing:8,color:'var(--primary)',margin:'8px 0 14px'}}>{code}</div>
+          <div style={{fontSize:12.5,color:'var(--text-mid)'}}>الرابط الشخصي للمريض</div>
+          <div dir="ltr" style={{fontSize:13,fontWeight:700,background:'var(--surface)',borderRadius:8,padding:'8px 10px',margin:'4px 0 12px',wordBreak:'break-all'}}>{link}</div>
+          <div style={{fontSize:12,color:'var(--text-light)'}}>الرابط وحده لا يفتح الملف — يلزم الرمز. إصدار رمز جديد يُلغي القديم فوراً.</div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
+          <div style={{flex:1}}/>
+          <button className="btn btn-outline" onClick={copy}>📋 نسخ الرسالة</button>
+          {wa && <button className="btn btn-accent" onClick={()=>window.open(wa,'_blank')}>📱 إرسال واتساب</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+async function issuePortalCode(patient){
+  if(!confirm(`إصدار رمز دخول الموقع للمريض «${patient.name}»؟\n(أي رمز سابق له يتوقف فوراً)`)) return null;
+  const { data, error } = await _supaClient.rpc('mc_portal_issue_code', { p_patient_id: patient.id });
+  if(error){ alert('تعذّر إصدار الرمز: ' + error.message); return null; }
+  return data;
+}
+
+// زر «رمز الموقع» في رأس ملف المريض (المدير فقط، ملف الإدارة فقط)
+function PortalCodeButton({patient}){
+  const [res,setRes] = useState(null);
+  const [acc,setAcc] = useState(undefined);
+  useEffect(()=>{
+    let alive = true;
+    _supaClient.rpc('mc_portal_list').then(({data})=>{ if(alive) setAcc((data||[]).find(x=>x.patient_id===patient.id)||null); });
+    return ()=>{ alive=false; };
+  }, [patient.id, res]);
+  if(!canManageWebsite()) return null;
+  return(
+    <>
+      <button className="btn btn-secondary btn-sm" title={acc ? ('مفعّل · آخر دخول: '+(acc.last_login_at?new Date(acc.last_login_at).toLocaleString('ar-EG'):'لم يدخل بعد')) : 'لا يملك رمزاً بعد'}
+        onClick={async()=>{ const c = await issuePortalCode(patient); if(c) setRes(c); }}>
+        🔑 رمز الموقع {acc ? '✓' : ''}
+      </button>
+      {res && <PortalCodeResult patient={patient} code={res} onClose={()=>setRes(null)}/>}
+    </>
+  );
+}
+
+function WebsitePage(){
+  const {appointments, patients, staff, services, addPatient, updateAppointment, settings} = useClinic();
+  const [tab,setTab] = useState('bookings');
+  const wc = useWebCounts();
+  if(!canManageWebsite()) return <div className="page-content"><div className="empty-state" style={{padding:40}}><h3>هذا القسم للمدير فقط</h3></div></div>;
+  const web = appointments.filter(isWebBooking).sort((a,b)=>String(b.bookedAt||b.created_at||'').localeCompare(String(a.bookedAt||a.created_at||'')));
+  const pending = web.filter(a=>a.status==='pending');
+  return(
+    <div className="page-content">
+      <div className="page-header">
+        <div><h1 className="page-title">🌐 الموقع الرسمي</h1><p className="page-subtitle">الحجوزات القادمة من الموقع، رموز دخول المرضى، وإعدادات الحجز</p></div>
+        <a className="btn btn-outline" href={PORTAL_SITE} target="_blank" rel="noopener">↗ فتح الموقع</a>
+      </div>
+      <div className="tabs-nav">
+        {[['bookings','📥 حجوزات الموقع'+(pending.length?` (${pending.length})`:'')],['followup','💬 الرسائل والمتابعة'+(wc.unread?` (${wc.unread})`:'')],['codes','🔑 رموز دخول المرضى'],['settings','⚙️ إعدادات الحجز والتمارين']].map(([k,l])=>(
+          <button key={k} className={`tab-btn ${tab===k?'active':''}`} onClick={()=>setTab(k)}>{l}</button>
+        ))}
+      </div>
+      {tab==='bookings' && <WebBookings web={web} pending={pending}/>}
+      {tab==='followup' && <WebFollowup/>}
+      {tab==='codes' && <WebCodes/>}
+      {tab==='settings' && <WebSettings/>}
+    </div>
+  );
+}
+
+function WebBookings({web, pending}){
+  const {patients, addPatient, updateAppointment, settings} = useClinic();
+  const [filter,setFilter] = useState('pending');
+  const list = filter==='pending' ? pending : web.slice(0,200);
+  const stLabel = {pending:'⏳ بانتظار التأكيد',confirmed:'✅ مؤكد',completed:'✔️ حضر',cancelled:'❌ ملغى',missed:'🚫 غاب'};
+  const genderAr = (g)=> g==='female'||g==='أنثى' ? 'أنثى' : g==='male'||g==='ذكر' ? 'ذكر' : '';
+  const confirmBooking = (a)=>{
+    let pid = a.patientId;
+    if(!pid){
+      const k = phoneKey9(a.phone);
+      const same = k.length===9 ? patients.find(p=>phoneKey9(p.phone)===k) : null;
+      if(same && confirm(`يوجد مريض مسجّل بنفس رقم الهاتف: «${same.name}» (${same.id}).\nربط هذا الحجز بملفه بدل إنشاء ملف جديد؟`)) pid = same.id;
+      else {
+        if(!confirm(`سيتم إنشاء ملف مريض جديد باسم «${a.patientName}» وتأكيد الموعد. متابعة؟`)) return;
+        const n = addPatient({id:nextId('P'), name:a.patientName||'', phone:a.phone||'', gender:genderAr(a.gender), status:'نشط', registeredAt:today(), source:'الموقع الإلكتروني', assignedTherapist:''});
+        pid = n.id;
+      }
+    }
+    updateAppointment(a.id, {...a, patientId:pid, status:'confirmed'});
+    const wa = waLink(a.phone, `مرحباً ${a.patientName} 🌿\nتم تأكيد موعدك في ${settings.clinicName||'مركز الحركة'} يوم ${a.date} الساعة ${a.time}${a.therapist?' مع '+a.therapist:''}.\nبانتظارك 🙏`);
+    if(wa && confirm('✅ تم التأكيد. إرسال رسالة تأكيد للمريض عبر واتساب؟')) window.open(wa,'_blank');
+  };
+  const rejectBooking = (a)=>{
+    if(!confirm(`رفض/إلغاء حجز «${a.patientName}» يوم ${a.date} ${a.time}؟`)) return;
+    updateAppointment(a.id, {...a, status:'cancelled', slotHandled:true});
+    const wa = waLink(a.phone, `مرحباً ${a.patientName} 🌿\nنعتذر، لم نتمكن من تثبيت موعدك يوم ${a.date} الساعة ${a.time}. يسعدنا اقتراح موعد آخر يناسبك — راسلنا هنا 🙏`);
+    if(wa && confirm('إبلاغ المريض عبر واتساب؟')) window.open(wa,'_blank');
+  };
+  return(
+    <div className="card">
+      <div className="card-header" style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+        <h3 style={{flex:1}}>📥 حجوزات الموقع</h3>
+        <button className={`btn btn-sm ${filter==='pending'?'btn-primary':'btn-ghost'}`} onClick={()=>setFilter('pending')}>⏳ بانتظار التأكيد ({pending.length})</button>
+        <button className={`btn btn-sm ${filter==='all'?'btn-primary':'btn-ghost'}`} onClick={()=>setFilter('all')}>📋 الكل ({web.length})</button>
+      </div>
+      <div style={{overflowX:'auto'}}>
+        <table className="data-table">
+          <thead><tr><th>وقت الطلب</th><th>المريض</th><th>الهاتف</th><th>النوع</th><th>الموعد</th><th>الخدمة / المعالج</th><th>الحالة</th><th></th></tr></thead>
+          <tbody>
+            {list.map(a=>(
+              <tr key={a.id}>
+                <td style={{fontSize:12}}>{a.bookedAt || (a.created_at?new Date(a.created_at).toLocaleString('ar-EG'):'—')}</td>
+                <td style={{fontWeight:700}}>{a.patientName||'—'}{genderAr(a.gender)&&<span style={{fontSize:11,color:'var(--text-light)'}}> · {genderAr(a.gender)}</span>}</td>
+                <td dir="ltr" style={{fontSize:12.5}}>{a.phone||'—'}</td>
+                <td>{a.patientId ? <span className="badge badge-blue">👤 مسجّل</span> : <span className="badge badge-orange">🆕 جديد</span>}</td>
+                <td style={{whiteSpace:'nowrap'}}><strong>{a.date}</strong> {a.time}</td>
+                <td style={{fontSize:12.5}}>{a.service||'—'}<br/><span style={{color:'var(--text-light)'}}>{a.therapist||'—'}</span></td>
+                <td style={{fontSize:12.5}}>{stLabel[a.status]||a.status}</td>
+                <td style={{whiteSpace:'nowrap'}}>
+                  {a.status==='pending' && <>
+                    <button className="btn btn-sm btn-accent" onClick={()=>confirmBooking(a)}>✅ تأكيد</button>{' '}
+                    <button className="btn btn-sm btn-ghost" onClick={()=>rejectBooking(a)}>✖ رفض</button>
+                  </>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {list.length===0 && <div className="empty-state" style={{padding:30}}><div className="icon">📭</div><h3>{filter==='pending'?'لا حجوزات بانتظار التأكيد':'لا حجوزات من الموقع بعد'}</h3></div>}
+      {pending.some(a=>a.notes) && filter==='pending' && (
+        <div style={{padding:'10px 16px',fontSize:12,color:'var(--text-light)'}}>💡 ملاحظات المريض مكتوبة في حقل «ملاحظات» الموعد ويمكن قراءتها من التقويم.</div>
+      )}
+    </div>
+  );
+}
+
+function WebCodes(){
+  const {patients} = useClinic();
+  const [rows,setRows] = useState([]);
+  const [q,setQ] = useState('');
+  const [res,setRes] = useState(null);
+  const [err,setErr] = useState('');
+  const load = async()=>{ const {data,error} = await _supaClient.rpc('mc_portal_list'); if(error) setErr(error.message); else { setErr(''); setRows(data||[]); } };
+  useEffect(()=>{ load(); }, []);
+  const pMap = Object.fromEntries(patients.map(p=>[p.id,p]));
+  const qq = q.trim();
+  const found = qq ? patients.filter(p=>(p.name||'').includes(qq) || (p.phone||'').includes(qq) || String(p.id).includes(qq)).slice(0,8) : [];
+  const issue = async(p)=>{ const c = await issuePortalCode(p); if(c){ setRes({patient:p, code:c}); load(); } };
+  const revoke = async(id)=>{
+    if(!confirm('إلغاء وصول هذا المريض إلى الموقع؟ لن يستطيع الدخول حتى يُصدر له رمز جديد.')) return;
+    const {error} = await _supaClient.rpc('mc_portal_revoke', {p_patient_id:id}); if(error) alert(error.message); load();
+  };
+  return(
+    <div className="grid-2">
+      <div className="card">
+        <div className="card-header"><h3>➕ إصدار رمز لمريض</h3></div>
+        <div className="card-body">
+          <input className="input" placeholder="🔎 ابحث بالاسم أو الهاتف أو الرقم..." value={q} onChange={e=>setQ(e.target.value)} style={{width:'100%',marginBottom:10}}/>
+          {found.map(p=>(
+            <div key={p.id} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0',borderBottom:'1px solid var(--border)'}}>
+              <div style={{flex:1}}><strong>{p.name}</strong> <span style={{fontSize:12,color:'var(--text-light)'}} dir="ltr">{p.phone}</span></div>
+              <button className="btn btn-sm btn-accent" onClick={()=>issue(p)}>🔑 إصدار رمز</button>
+            </div>
+          ))}
+          {qq && found.length===0 && <div style={{fontSize:13,color:'var(--text-light)'}}>لا نتائج.</div>}
+          <div style={{fontSize:12,color:'var(--text-light)',marginTop:10}}>يمكن أيضاً إصدار الرمز من زر «🔑 رمز الموقع» داخل ملف المريض.</div>
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-header"><h3>👥 مرضى لديهم وصول ({rows.length})</h3><button className="btn btn-sm btn-ghost" onClick={load}>🔄</button></div>
+        {err && <div className="alert alert-error" style={{margin:12}}>{err}</div>}
+        <div style={{maxHeight:420,overflowY:'auto'}}>
+          <table className="data-table">
+            <thead><tr><th>المريض</th><th>آخر دخول</th><th></th></tr></thead>
+            <tbody>
+              {rows.map(r=>{ const p=pMap[r.patient_id]||{id:r.patient_id,name:r.patient_id}; return(
+                <tr key={r.patient_id}>
+                  <td style={{fontWeight:700}}>{p.name}{r.locked && <span className="badge badge-red" style={{marginRight:6}}>🔒 مقفل مؤقتاً</span>}</td>
+                  <td style={{fontSize:12}}>{r.last_login_at?new Date(r.last_login_at).toLocaleString('ar-EG'):'لم يدخل بعد'}</td>
+                  <td style={{whiteSpace:'nowrap'}}>
+                    <button className="btn btn-sm btn-outline" onClick={()=>issue(p)} title="رمز جديد">🔄</button>{' '}
+                    <button className="btn btn-sm btn-ghost" onClick={()=>revoke(r.patient_id)} title="إلغاء الوصول">🚫</button>
+                  </td>
+                </tr>
+              ); })}
+            </tbody>
+          </table>
+          {rows.length===0 && !err && <div className="empty-state" style={{padding:24}}><p>لم يُصدر أي رمز بعد.</p></div>}
+        </div>
+      </div>
+      {res && <PortalCodeResult patient={res.patient} code={res.code} onClose={()=>setRes(null)}/>}
+    </div>
+  );
+}
+
+const WEB_DAYS = [[6,'السبت'],[0,'الأحد'],[1,'الاثنين'],[2,'الثلاثاء'],[3,'الأربعاء'],[4,'الخميس']];
+function WebSettings(){
+  const {staff, services, showToast} = useClinic();
+  const [cfg,setCfg] = useState(null);
+  const [err,setErr] = useState('');
+  const [busy,setBusy] = useState(false);
+  useEffect(()=>{
+    _supaClient.from('mc_portal_settings').select('config').eq('id',1).single()
+      .then(({data,error})=>{ if(error) setErr(error.message); else setCfg(data.config); });
+  }, []);
+  if(err) return <div className="alert alert-error">{err}</div>;
+  if(!cfg) return <div className="empty-state" style={{padding:30}}><p>⏳ جارٍ التحميل...</p></div>;
+  const staffNames = (staff||[]).filter(s=>s.status!=='متوقف' && s.name).map(s=>s.name);
+  const svcNames = (services||[]).filter(s=>s.active).map(s=>s.name);
+  const set = (path, val)=> setCfg(c=>{ const n=JSON.parse(JSON.stringify(c)); let o=n; for(let i=0;i<path.length-1;i++){ o[path[i]] = o[path[i]] ?? {}; o=o[path[i]]; } o[path[path.length-1]]=val; return n; });
+  const consultHours = cfg.consult?.hours || {};
+  const toggleConsult = (dw,h)=> setCfg(c=>{
+    const n = JSON.parse(JSON.stringify(c)); n.consult = n.consult || {}; n.consult.hours = n.consult.hours || {};
+    const cur = n.consult.hours[dw] || [];
+    n.consult.hours[dw] = cur.includes(h) ? cur.filter(x=>x!==h) : [...cur,h].sort((x,y)=>x-y);
+    return n;
+  });
+  const consultCount = Object.values(consultHours).reduce((t,a)=>t+(a||[]).length,0);
+  const ex = cfg.exercises || [];
+  const setEx = (i,k,v)=>{ const n=ex.map((e,j)=>j===i?{...e,[k]:v}:e); set(['exercises'], n); };
+  const save = async()=>{
+    setBusy(true);
+    const {error} = await _supaClient.from('mc_portal_settings').upsert({id:1, config:cfg, updated_at:new Date().toISOString()});
+    setBusy(false);
+    if(error) alert('تعذّر الحفظ: '+error.message); else showToast('✅ تم حفظ إعدادات الموقع — تُطبَّق فوراً');
+  };
+  const renderGroup = (k,title)=>{
+    const g = cfg[k]||{};
+    return(
+      <div key={k} className="card" style={{flex:1,minWidth:280}}>
+        <div className="card-header"><h3>{title}</h3></div>
+        <div className="card-body">
+          <div style={{fontSize:12.5,fontWeight:700,marginBottom:6}}>المعالجون</div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:10}}>
+            {staffNames.map(n=>{ const on=(g.therapists||[]).includes(n); return(
+              <button key={n} type="button" className={`btn btn-sm ${on?'btn-primary':'btn-ghost'}`}
+                onClick={()=>set([k,'therapists'], on ? g.therapists.filter(x=>x!==n) : [...(g.therapists||[]), n])}>{on?'✓ ':''}{n}</button>
+            ); })}
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:10,fontSize:13}}>
+            من <input className="input" type="number" min="6" max="23" value={g.from} onChange={e=>set([k,'from'], +e.target.value)} style={{width:70}}/>
+            إلى <input className="input" type="number" min="7" max="24" value={g.to} onChange={e=>set([k,'to'], +e.target.value)} style={{width:70}}/>
+          </div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+            {WEB_DAYS.map(([dw,l])=>{ const on=(g.days||[]).includes(dw); return(
+              <button key={dw} type="button" className={`btn btn-sm ${on?'btn-primary':'btn-ghost'}`}
+                onClick={()=>set([k,'days'], on ? g.days.filter(x=>x!==dw) : [...(g.days||[]), dw])}>{l}</button>
+            ); })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+  const hours = []; for(let h=9; h<=21; h++) hours.push(h);
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      <div className="alert alert-info"><div>💡 هذه الإعدادات تتحكم بما يراه المرضى على الموقع فوراً بعد الحفظ. الجمعة مغلق دائماً، ولا يظهر أي وقت إلا إذا كان المعالج فارغاً فعلاً في السيستم.</div></div>
+
+      <div className="card" style={{borderTop:'3px solid var(--accent)'}}>
+        <div className="card-header"><h3>🩺 أوقات استشارات {cfg.consult?.therapist||'د. يامن'} للمرضى الجدد ({consultCount} ساعة أسبوعياً)</h3></div>
+        <div className="card-body">
+          {consultCount===0 && <div className="alert alert-warning" style={{marginBottom:10}}><div>⚠️ لم تُحدَّد أوقات بعد — حالياً تتبع الاستشارات ساعات النساء/الرجال حسب جنس المريض. اختر الساعات أدناه ثم احفظ.</div></div>}
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:10,fontSize:13,alignItems:'center'}}>
+            الطبيب: <select className="input" value={cfg.consult?.therapist||''} onChange={e=>set(['consult','therapist'], e.target.value)} style={{width:200}}>{staffNames.map(n=><option key={n} value={n}>{n}</option>)}</select>
+            الخدمة: <select className="input" value={cfg.consult?.service||''} onChange={e=>set(['consult','service'], e.target.value)} style={{width:200}}>{svcNames.map(n=><option key={n} value={n}>{n}</option>)}</select>
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{borderCollapse:'collapse',fontSize:12,minWidth:640}}>
+              <thead><tr><th style={{padding:4}}></th>{hours.map(h=><th key={h} style={{padding:4}}>{h}:00</th>)}</tr></thead>
+              <tbody>
+                {WEB_DAYS.map(([dw,l])=>(
+                  <tr key={dw}>
+                    <td style={{padding:4,fontWeight:700,whiteSpace:'nowrap'}}>{l}</td>
+                    {hours.map(h=>{ const on=(consultHours[dw]||[]).includes(h); return(
+                      <td key={h} style={{padding:2}}>
+                        <button type="button" onClick={()=>toggleConsult(dw,h)} style={{width:34,height:26,border:'1px solid var(--border)',borderRadius:6,cursor:'pointer',background:on?'var(--primary)':'var(--card)',color:on?'#fff':'var(--text-light)',fontWeight:800}}>{on?'✓':''}</button>
+                      </td>
+                    ); })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+        {renderGroup('women', '👩 ساعات النساء (جلسات المريضات المسجّلات)')}
+        {renderGroup('men', '👨 ساعات الرجال (جلسات المرضى المسجّلين)')}
+      </div>
+
+      <div className="card">
+        <div className="card-header"><h3>🔄 خدمة الجلسة عند حجز مريض مسجّل</h3></div>
+        <div className="card-body">
+          <select className="input" value={cfg.sessionService||''} onChange={e=>set(['sessionService'], e.target.value)} style={{width:260}}>{svcNames.map(n=><option key={n} value={n}>{n}</option>)}</select>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><h3>📊 نسخ حجوزات الموقع إلى Google Sheets</h3></div>
+        <div className="card-body">
+          <input className="input" dir="ltr" placeholder="https://script.google.com/macros/s/.../exec" value={cfg.sheetsUrl||''} onChange={e=>set(['sheetsUrl'], e.target.value.trim())} style={{width:'100%'}}/>
+          <div style={{fontSize:12,color:'var(--text-light)',marginTop:6}}>كل حجز جديد من الموقع يُنسخ تلقائياً إلى هذا الجدول (من الخادم) كنسخة احتياطية إضافية. اتركه فارغاً لإيقاف النسخ.</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><h3>🏋️ التمارين الهدية لكل المرضى ({ex.length})</h3>
+          {ex.length<10 && <button className="btn btn-sm btn-outline" onClick={()=>set(['exercises'], [...ex, {title:'',description:'',sets:3,reps:'10',videoUrl:''}])}>➕ تمرين</button>}
+        </div>
+        <div className="card-body" style={{display:'flex',flexDirection:'column',gap:12}}>
+          {ex.map((e,i)=>(
+            <div key={i} style={{border:'1px solid var(--border)',borderRadius:10,padding:10}}>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:6}}>
+                <input className="input" placeholder="اسم التمرين" value={e.title} onChange={x=>setEx(i,'title',x.target.value)} style={{flex:2,minWidth:180}}/>
+                <input className="input" type="number" placeholder="مجموعات" value={e.sets} onChange={x=>setEx(i,'sets',+x.target.value)} style={{width:90}}/>
+                <input className="input" placeholder="تكرارات" value={e.reps} onChange={x=>setEx(i,'reps',x.target.value)} style={{width:110}}/>
+                <button className="btn btn-sm btn-ghost" onClick={()=>{ if(confirm('حذف هذا التمرين؟')) set(['exercises'], ex.filter((_,j)=>j!==i)); }}>🗑</button>
+              </div>
+              <textarea className="input" rows={2} placeholder="طريقة الأداء" value={e.description} onChange={x=>setEx(i,'description',x.target.value)} style={{width:'100%',marginBottom:6}}/>
+              <input className="input" dir="ltr" placeholder="رابط الفيديو (YouTube أو غيره) — اختياري" value={e.videoUrl} onChange={x=>setEx(i,'videoUrl',x.target.value)} style={{width:'100%'}}/>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{position:'sticky',bottom:0,background:'var(--bg)',padding:'10px 0',display:'flex',justifyContent:'flex-end'}}>
+        <button className="btn btn-accent" onClick={save} disabled={busy}>{busy?'⏳ جارٍ الحفظ...':'💾 حفظ إعدادات الموقع'}</button>
+      </div>
+    </div>
+  );
+}
+
+// ── المرحلة 2: متابعة المريض من الموقع (ألم يومي، تمارين، رسائل، تقييم الجلسات) ──
+const isoDaysAgo = (n)=>{ const d=new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); };
+const painColor = (s)=> s>=8 ? '#dc2626' : s>=5 ? '#d97706' : '#059669';
+
+// عدّادات خفيفة (رسائل غير مقروءة، ألم مرتفع، تقييمات منخفضة) مع تحديث فوري — للمدير فقط
+function useWebCounts(){
+  const [c,setC] = useState({unread:0, highPain:0, lowRatings:0});
+  useEffect(()=>{
+    if(!canManageWebsite()) return;
+    let alive = true;
+    const load = async()=>{
+      const [u,hp,lr] = await Promise.all([
+        _supaClient.from('mc_portal_messages').select('id',{count:'exact',head:true}).eq('sender','patient').is('read_by_staff_at',null),
+        _supaClient.from('mc_portal_pain').select('patient_id',{count:'exact',head:true}).gte('score',8).gte('day',isoDaysAgo(7)),
+        _supaClient.from('mc_portal_ratings').select('appointment_id',{count:'exact',head:true}).lte('stars',2).gte('created_at',isoDaysAgo(30)),
+      ]);
+      if(alive) setC({unread:u.count||0, highPain:hp.count||0, lowRatings:lr.count||0});
+    };
+    load();
+    const ch = _supaClient.channel('mc-web-counts-'+Math.random().toString(36).slice(2))
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_messages'},load)
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_pain'},load)
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_ratings'},load)
+      .subscribe();
+    const t = setInterval(load, 120000);
+    return ()=>{ alive=false; clearInterval(t); try{ _supaClient.removeChannel(ch); }catch(e){} };
+  }, []);
+  return c;
+}
+
+function PainBars({rows}){
+  const days = []; for(let i=29;i>=0;i--) days.push(isoDaysAgo(i));
+  const m = Object.fromEntries((rows||[]).map(r=>[r.day,r]));
+  return(
+    <div style={{display:'flex',alignItems:'flex-end',gap:3,height:110,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
+      {days.map(d=>{ const r=m[d]; return(
+        <div key={d} title={r?`${d}: ${r.score}/10${r.note?' — '+r.note:''}`:`${d}: لا تسجيل`} style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'flex-end',alignItems:'center',height:'100%'}}>
+          <div style={{width:'100%',minHeight:r?4:2,height:r?`${Math.max(4,r.score*10)}%`:2,background:r?painColor(r.score):'var(--border)',borderRadius:3}}/>
+        </div>
+      ); })}
+    </div>
+  );
+}
+
+function MessageThread({patientId, messages, onSent}){
+  const [text,setText] = useState('');
+  const [busy,setBusy] = useState(false);
+  const endRef = useRef(null);
+  useEffect(()=>{ endRef.current?.scrollIntoView({block:'nearest'}); }, [messages.length]);
+  const send = async()=>{
+    const body = text.trim(); if(!body) return;
+    setBusy(true);
+    const {error} = await _supaClient.from('mc_portal_messages').insert({patient_id:patientId, sender:'staff', staff_name:'العيادة', body});
+    setBusy(false);
+    if(error){ alert('تعذّر الإرسال: '+error.message); return; }
+    setText(''); onSent && onSent();
+  };
+  return(
+    <div>
+      <div style={{maxHeight:340,overflowY:'auto',display:'flex',flexDirection:'column',gap:6,padding:4}}>
+        {messages.length===0 && <div style={{fontSize:13,color:'var(--text-light)',textAlign:'center',padding:16}}>لا رسائل بعد.</div>}
+        {messages.map(m=>(
+          <div key={m.id} style={{alignSelf:m.sender==='patient'?'flex-start':'flex-end',maxWidth:'80%',background:m.sender==='patient'?'var(--surface)':'var(--primary)',color:m.sender==='patient'?'var(--text)':'#fff',borderRadius:12,padding:'7px 11px',fontSize:13.5,whiteSpace:'pre-wrap'}}>
+            {m.body}
+            <div style={{fontSize:10.5,opacity:.7,marginTop:3}}>{m.sender==='patient'?'المريض':(m.staff_name||'العيادة')} · {new Date(m.created_at).toLocaleString('ar-EG')}{m.sender==='staff' && (m.read_by_patient_at?' · ✓✓ قرأها':' · ✓')}</div>
+          </div>
+        ))}
+        <div ref={endRef}/>
+      </div>
+      {canManageWebsite() ? (
+        <div style={{display:'flex',gap:6,marginTop:8}}>
+          <textarea className="input" rows={2} placeholder="اكتب رداً للمريض..." value={text} onChange={e=>setText(e.target.value)} style={{flex:1}} maxLength={1000}/>
+          <button className="btn btn-accent" onClick={send} disabled={busy||!text.trim()}>{busy?'⏳':'📤 إرسال'}</button>
+        </div>
+      ) : <div style={{fontSize:12,color:'var(--text-light)',marginTop:6}}>الرد على المرضى من ملف الإدارة فقط.</div>}
+    </div>
+  );
+}
+
+// تبويب «📱 متابعة الموقع» داخل ملف المريض — يقرؤه كل الكادر، والرد للمدير فقط
+function PatientPortalTab({patient}){
+  const [d,setD] = useState(null);
+  const load = useCallback(async()=>{
+    const id = patient.id;
+    const [pain, ex, msgs, rat] = await Promise.all([
+      _supaClient.from('mc_portal_pain').select('day,score,note').eq('patient_id',id).gte('day',isoDaysAgo(60)).order('day'),
+      _supaClient.from('mc_portal_exercise_log').select('day').eq('patient_id',id).gte('day',isoDaysAgo(60)).order('day'),
+      _supaClient.from('mc_portal_messages').select('*').eq('patient_id',id).order('created_at').limit(300),
+      _supaClient.from('mc_portal_ratings').select('*').eq('patient_id',id).order('created_at',{ascending:false}),
+    ]);
+    setD({pain:pain.data||[], ex:ex.data||[], msgs:msgs.data||[], ratings:rat.data||[], err:(pain.error||msgs.error||{}).message});
+    if(canManageWebsite() && (msgs.data||[]).some(m=>m.sender==='patient' && !m.read_by_staff_at)){
+      await _supaClient.from('mc_portal_messages').update({read_by_staff_at:new Date().toISOString()}).eq('patient_id',id).eq('sender','patient').is('read_by_staff_at',null);
+    }
+  }, [patient.id]);
+  useEffect(()=>{
+    load();
+    const ch = _supaClient.channel('mc-pt-portal-'+patient.id)
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_messages',filter:'patient_id=eq.'+patient.id},load)
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_pain',filter:'patient_id=eq.'+patient.id},load)
+      .subscribe();
+    return ()=>{ try{ _supaClient.removeChannel(ch); }catch(e){} };
+  }, [load]);
+  if(!d) return <div className="empty-state" style={{padding:30}}><p>⏳ جارٍ التحميل...</p></div>;
+  if(d.err) return <div className="alert alert-error">{d.err}</div>;
+  const last = d.pain[d.pain.length-1];
+  const week = d.pain.filter(r=>r.day>=isoDaysAgo(7));
+  const avg7 = week.length ? (week.reduce((t,r)=>t+r.score,0)/week.length).toFixed(1) : null;
+  const ex30 = d.ex.filter(r=>r.day>=isoDaysAgo(30)).length;
+  const avgStars = d.ratings.length ? (d.ratings.reduce((t,r)=>t+r.stars,0)/d.ratings.length).toFixed(1) : null;
+  const nothing = !d.pain.length && !d.ex.length && !d.msgs.length && !d.ratings.length;
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      {nothing && (
+        <div className="alert alert-info"><div>📱 لا توجد متابعة من الموقع لهذا المريض بعد. {canManageWebsite() ? 'أصدر له رمز دخول من زر «🔑 رمز الموقع» أعلى الملف ليبدأ بتسجيل ألمه اليومي وتمارينه ورسائله.' : ''}</div></div>
+      )}
+      <div className="stats-grid" style={{gridTemplateColumns:'repeat(4,1fr)'}}>
+        {[
+          ['😣 آخر ألم مسجّل', last?`${last.score}/10`:'—', last?painColor(last.score):'var(--text-light)', last?last.day:'لا تسجيل'],
+          ['📉 متوسط آخر 7 أيام', avg7?`${avg7}/10`:'—', avg7?painColor(+avg7):'var(--text-light)', `${week.length} تسجيلات`],
+          ['🏋️ التزام التمارين', `${ex30}/30`, ex30>=15?'var(--green)':ex30>=7?'var(--orange)':'var(--red)', 'يوماً في آخر 30 يوم'],
+          ...(isAdminUser() ? [['⭐ تقييم الجلسات', avgStars?`${avgStars}/5`:'—', 'var(--accent)', `${d.ratings.length} تقييم`]] : []),
+        ].map(([l,v,c,sub],i)=>(
+          <div key={i} className="stat-card"><div className="stat-content"><h3 style={{color:c,fontSize:18}}>{v}</h3><p>{l}</p><span style={{fontSize:11,color:'var(--text-light)',fontWeight:700}}>{sub}</span></div></div>
+        ))}
+      </div>
+      <div className="card">
+        <div className="card-header"><h3>😣 الألم اليومي — آخر 30 يوماً</h3></div>
+        <div className="card-body">
+          <PainBars rows={d.pain}/>
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text-light)',marginTop:4}}><span>{isoDaysAgo(29)}</span><span>اليوم</span></div>
+          {d.pain.filter(r=>r.note).slice(-5).reverse().map(r=>(
+            <div key={r.day} style={{fontSize:12.5,marginTop:6}}><span style={{color:painColor(r.score),fontWeight:800}}>{r.score}/10</span> · {r.day} — {r.note}</div>
+          ))}
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-header"><h3>💬 الرسائل ({d.msgs.length})</h3></div>
+        <div className="card-body"><MessageThread patientId={patient.id} messages={d.msgs} onSent={load}/></div>
+      </div>
+      {isAdminUser() && d.ratings.length>0 && (
+        <div className="card">
+          <div className="card-header"><h3>⭐ تقييمات الجلسات</h3></div>
+          <table className="data-table">
+            <thead><tr><th>التاريخ</th><th>المعالج</th><th>التقييم</th><th>ملاحظة</th></tr></thead>
+            <tbody>{d.ratings.map(r=>(
+              <tr key={r.appointment_id}><td>{new Date(r.created_at).toLocaleDateString('ar-EG')}</td><td>{r.therapist||'—'}</td>
+                <td style={{color:r.stars<=2?'var(--red)':'var(--accent)',fontWeight:800}}>{'★'.repeat(r.stars)}{'☆'.repeat(5-r.stars)}</td><td>{r.note||'—'}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// تبويب «💬 الرسائل والمتابعة» في قسم الموقع الرسمي (المدير)
+function WebFollowup(){
+  const {patients} = useClinic();
+  const [d,setD] = useState(null);
+  const [sel,setSel] = useState(null);
+  const load = useCallback(async()=>{
+    const [msgs, pain, rat] = await Promise.all([
+      _supaClient.from('mc_portal_messages').select('*').order('created_at',{ascending:false}).limit(800),
+      _supaClient.from('mc_portal_pain').select('*').gte('day',isoDaysAgo(7)).gte('score',8).order('day',{ascending:false}),
+      _supaClient.from('mc_portal_ratings').select('*').gte('created_at',isoDaysAgo(90)).order('created_at',{ascending:false}),
+    ]);
+    setD({msgs:msgs.data||[], pain:pain.data||[], ratings:rat.data||[]});
+  }, []);
+  useEffect(()=>{
+    load();
+    const ch = _supaClient.channel('mc-web-followup')
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_messages'},load)
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_pain'},load)
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_ratings'},load)
+      .subscribe();
+    return ()=>{ try{ _supaClient.removeChannel(ch); }catch(e){} };
+  }, [load]);
+  if(!d) return <div className="empty-state" style={{padding:30}}><p>⏳ جارٍ التحميل...</p></div>;
+  const pName = (id)=> (patients.find(p=>p.id===id)||{}).name || id;
+  const threads = {};
+  d.msgs.forEach(m=>{ const t = threads[m.patient_id] || (threads[m.patient_id]={id:m.patient_id,last:m,unread:0,all:[]}); t.all.push(m); if(m.sender==='patient' && !m.read_by_staff_at) t.unread++; });
+  const tList = Object.values(threads).sort((a,b)=>(b.unread>0)-(a.unread>0) || String(b.last.created_at).localeCompare(String(a.last.created_at)));
+  const open = async(id)=>{
+    setSel(id);
+    if(threads[id]?.unread){ await _supaClient.from('mc_portal_messages').update({read_by_staff_at:new Date().toISOString()}).eq('patient_id',id).eq('sender','patient').is('read_by_staff_at',null); load(); }
+  };
+  const byTher = {};
+  d.ratings.forEach(r=>{ const k=r.therapist||'غير محدد'; const o=byTher[k]||(byTher[k]={n:0,sum:0,low:0}); o.n++; o.sum+=r.stars; if(r.stars<=2) o.low++; });
+  const lowRatings = d.ratings.filter(r=>r.stars<=2 && r.created_at>=isoDaysAgo(30));
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      {(d.pain.length>0 || lowRatings.length>0) && (
+        <div className="card" style={{borderTop:'3px solid var(--red)'}}>
+          <div className="card-header"><h3>🚨 تنبيهات</h3></div>
+          <div className="card-body" style={{display:'flex',flexDirection:'column',gap:6}}>
+            {d.pain.map(r=>(<div key={r.patient_id+r.day} style={{fontSize:13.5,cursor:'pointer'}} onClick={()=>open(r.patient_id)}>😣 <strong>{pName(r.patient_id)}</strong> سجّل ألماً <strong style={{color:'var(--red)'}}>{r.score}/10</strong> يوم {r.day}{r.note?' — '+r.note:''}</div>))}
+            {lowRatings.map(r=>(<div key={r.appointment_id} style={{fontSize:13.5}}>⭐ <strong>{pName(r.patient_id)}</strong> قيّم جلسته مع {r.therapist||'—'} بـ <strong style={{color:'var(--red)'}}>{r.stars}/5</strong>{r.note?' — '+r.note:''}</div>))}
+          </div>
+        </div>
+      )}
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-header"><h3>💬 المحادثات ({tList.length})</h3></div>
+          <div style={{maxHeight:460,overflowY:'auto'}}>
+            {tList.map(t=>(
+              <div key={t.id} onClick={()=>open(t.id)} style={{padding:'10px 14px',borderBottom:'1px solid var(--border)',cursor:'pointer',background:sel===t.id?'var(--primary-bg)':undefined}}>
+                <div style={{display:'flex',justifyContent:'space-between',gap:8}}>
+                  <strong>{pName(t.id)}</strong>
+                  {t.unread>0 && <span className="badge badge-red">{t.unread} جديدة</span>}
+                </div>
+                <div style={{fontSize:12,color:'var(--text-light)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{t.last.sender==='staff'?'↩︎ ':''}{t.last.body}</div>
+              </div>
+            ))}
+            {tList.length===0 && <div className="empty-state" style={{padding:30}}><p>لا رسائل من المرضى بعد.</p></div>}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header"><h3>{sel ? pName(sel) : 'اختر محادثة'}</h3></div>
+          <div className="card-body">
+            {sel ? <MessageThread patientId={sel} messages={[...(threads[sel]?.all||[])].reverse()} onSent={load}/> : <div style={{color:'var(--text-light)',fontSize:13}}>اختر مريضاً من القائمة لعرض المحادثة والرد.</div>}
+          </div>
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-header"><h3>⭐ رضا المرضى لكل معالج (آخر 90 يوماً)</h3></div>
+        <table className="data-table">
+          <thead><tr><th>المعالج</th><th>عدد التقييمات</th><th>المتوسط</th><th>تقييمات منخفضة</th></tr></thead>
+          <tbody>{Object.entries(byTher).sort((a,b)=>b[1].sum/b[1].n-a[1].sum/a[1].n).map(([k,o])=>(
+            <tr key={k}><td style={{fontWeight:700}}>{k}</td><td>{o.n}</td><td style={{fontWeight:800,color:'var(--accent)'}}>{(o.sum/o.n).toFixed(1)} ★</td><td style={{color:o.low?'var(--red)':'var(--text-light)'}}>{o.low}</td></tr>
+          ))}</tbody>
+        </table>
+        {Object.keys(byTher).length===0 && <div className="empty-state" style={{padding:20}}><p>لا تقييمات بعد.</p></div>}
+      </div>
+    </div>
+  );
+}
+
+// بطاقة لوحة التحكم: ملخص متابعة الموقع (للمدير)
+function WebFollowupCard({navigate}){
+  const c = useWebCounts();
+  if(!canManageWebsite() || (c.unread+c.highPain+c.lowRatings)===0) return null;
+  return(
+    <div className="card" style={{marginTop:20,borderTop:'3px solid #0891b2'}}>
+      <div className="card-body" style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}}>
+        <span style={{fontSize:26}}>🌐</span>
+        <div style={{flex:1,minWidth:200,fontSize:13.5,lineHeight:1.9}}>
+          <strong>متابعة المرضى من الموقع</strong><br/>
+          {c.unread>0 && <span>💬 {c.unread} رسالة جديدة · </span>}
+          {c.highPain>0 && <span style={{color:'var(--red)'}}>😣 {c.highPain} تسجيل ألم مرتفع (≥8) هذا الأسبوع · </span>}
+          {c.lowRatings>0 && <span style={{color:'var(--red)'}}>⭐ {c.lowRatings} تقييم منخفض هذا الشهر</span>}
+        </div>
+        <button className="btn btn-accent" onClick={()=>navigate('website')}>فتح المتابعة</button>
+      </div>
+    </div>
+  );
+}
+
+// تنبيه فوري (صوت + رسالة) عند وصول حجز جديد من الموقع — للمدير في ملف الإدارة فقط
+function WebBookingAlert(){
+  const {appointments, patients, showToast} = useClinic();
+  const seen = useRef(null);
+  const pRef = useRef(patients); pRef.current = patients;
+  useEffect(()=>{
+    if(!canManageWebsite()) return;
+    const nm = (id)=> ((pRef.current||[]).find(p=>p.id===id)||{}).name || 'مريض';
+    const ch = _supaClient.channel('mc-web-live-alerts')
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'mc_portal_messages'},(e)=>{
+        const m=e.new||{}; if(m.sender!=='patient') return;
+        mcBeep(); showToast(`💬 رسالة جديدة من ${nm(m.patient_id)}: ${String(m.body||'').slice(0,60)}`);
+      })
+      .on('postgres_changes',{event:'*',schema:'public',table:'mc_portal_pain'},(e)=>{
+        const r=e.new||{}; if((r.score??0)<8) return;
+        mcBeep(); showToast(`😣 ${nm(r.patient_id)} سجّل ألماً مرتفعاً ${r.score}/10`, 'error');
+      })
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'mc_portal_ratings'},(e)=>{
+        const r=e.new||{}; if((r.stars??5)>2) return;
+        mcBeep(); showToast(`⭐ تقييم منخفض ${r.stars}/5 من ${nm(r.patient_id)}`, 'error');
+      })
+      .subscribe();
+    return ()=>{ try{ _supaClient.removeChannel(ch); }catch(e){} };
+  }, []);
+  useEffect(()=>{
+    if(!canManageWebsite()) return;
+    const ids = appointments.filter(a=>isWebBooking(a) && a.status==='pending').map(a=>a.id);
+    if(seen.current===null){ seen.current = new Set(ids); return; }
+    const fresh = ids.filter(id=>!seen.current.has(id));
+    fresh.forEach(id=>seen.current.add(id));
+    if(fresh.length){
+      const a = appointments.find(x=>x.id===fresh[0]) || {};
+      mcBeep();
+      showToast(`🌐 حجز جديد من الموقع: ${a.patientName||''} — ${a.date||''} ${a.time||''}`);
+      try{ if(window.Notification && Notification.permission==='granted') new Notification('حجز جديد من الموقع', {body:`${a.patientName||''} — ${a.date||''} ${a.time||''}`}); }catch(e){}
+    }
+  }, [appointments]);
+  return null;
+}
+
+// ══════════════════════════════════════════════════
 // PAGE ROUTER
 // ══════════════════════════════════════════════════
 function PageRouter({currentPage, patientId, navigate}){
@@ -10706,6 +11469,7 @@ function PageRouter({currentPage, patientId, navigate}){
     case 'categories': return STAFF_MODE ? <Dashboard navigate={navigate}/> : <CategoriesPage/>;
     case 'settings':   return STAFF_MODE ? <Dashboard navigate={navigate}/> : <SettingsPage/>;
     case 'users':      return isAdminUser() && !STAFF_MODE ? <UserManagementPage/> : <Dashboard navigate={navigate}/>;
+    case 'website':    return isAdminUser() && !STAFF_MODE ? <WebsitePage/> : <Dashboard navigate={navigate}/>;
     default:           return <Dashboard navigate={navigate}/>;
   }
 }
