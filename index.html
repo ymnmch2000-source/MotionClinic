@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <meta name="theme-color" content="#0f2d4a"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-title" content="Motion Clinic"/>
+  <meta name="apple-mobile-web-app-title" content="Motion Center"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Motion Clinic Enterprise v7 — Realtime</title>
+<title>Motion Center — مركز الحركة</title>
 <script>
 /* التقاط حدث التثبيت مبكراً: المتصفح يُطلقه قبل أن ينتهي Babel من التصريف،
    فلو انتظرنا React لضاع الحدث ولما ظهر زر «ثبّت التطبيق». */
@@ -75,7 +75,7 @@ function __mcHardReload(){
 <script>window.supabase || document.write('<script src="https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"><\/script>')</script>
 <style>
 /* ══════════════════════════════════════════════════
-   MOTION CLINIC v6 — ENTERPRISE DESIGN SYSTEM
+   MOTION CENTER v6 — ENTERPRISE DESIGN SYSTEM
    Theme: Deep Medical Navy + Olive Brand
 ══════════════════════════════════════════════════ */
 :root {
@@ -490,7 +490,7 @@ select.input{cursor:pointer;}
 <body>
 <div id="root"><div id="mc-splash" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:linear-gradient(170deg,#1a3c5e,#0a1f36);color:#fff;font-family:Cairo,Tahoma,sans-serif;text-align:center;padding:20px">
   <div style="font-size:44px">🏥</div>
-  <div style="font-size:18px;font-weight:800">Motion Clinic</div>
+  <div style="font-size:18px;font-weight:800">Motion Center</div>
   <div id="mc-splash-msg" style="font-size:14px;opacity:.85;max-width:420px;line-height:1.8">جارٍ تحميل النظام... قد يستغرق ذلك بضع ثوانٍ على الهاتف</div>
   <div id="mc-splash-actions" style="display:none;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px">
     <button onclick="location.reload()" style="padding:9px 18px;border:none;border-radius:10px;background:#e8a020;color:#fff;font-weight:800;font-family:inherit;cursor:pointer">🔄 إعادة المحاولة</button>
@@ -984,7 +984,7 @@ function parseFullCSV(text){
 // DEFAULT DATA
 // ══════════════════════════════════════════════════
 const DEF_SETTINGS = {
-  clinicName:'Motion Clinic — عيادة الحركة',
+  clinicName:'Motion Center — مركز الحركة',
   phone:'+963-XXX-XXXXXX', email:'info@motionclinic.com',
   address:'دمشق، سوريا', hours:'9:00 - 20:00', days:'الأحد — الجمعة',
   currency:'ل.س', therapistName:'د. يامن نزية',
@@ -1736,7 +1736,7 @@ function ClinicProvider({ children }) {
     const blob = new Blob([JSON.stringify(backupPayload(),null,2)],{type:'application/json'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `MotionClinic_Backup_${today()}.json`;
+    a.download = `MotionCenter_Backup_${today()}.json`;
     a.click();
     markBackupDone();
     showToast('تم تصدير النسخة الاحتياطية ✓');
@@ -1770,7 +1770,7 @@ function ClinicProvider({ children }) {
     const blob = new Blob(['\uFEFF'+xml],{type:'application/vnd.ms-excel;charset=utf-8'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `MotionClinic_${today()}.xls`;
+    a.download = `MotionCenter_${today()}.xls`;
     a.click();
     showToast('تم تصدير ملف Excel ✓');
   };
@@ -1797,7 +1797,7 @@ function ClinicProvider({ children }) {
     try{
       const perm = await h.requestPermission({ mode:'readwrite' });
       if(perm !== 'granted'){ if(!silent) showToast('لم يُسمح بالكتابة في المجلد','error'); return false; }
-      const fh = await h.getFileHandle(`MotionClinic_Backup_${today()}.json`, { create:true });
+      const fh = await h.getFileHandle(`MotionCenter_Backup_${today()}.json`, { create:true });
       const ws = await fh.createWritable();
       await ws.write(JSON.stringify(backupPayload(),null,2));
       await ws.close();
@@ -2124,7 +2124,7 @@ function InfoGrid({items}){
 // النص محفوظ في الإعدادات (يُزامَن عبر Supabase) فيراه كل الأجهزة.
 const REMINDER_VARS = [
   ['{name}','اسم المريض'], ['{date}','تاريخ الموعد'], ['{time}','وقت الموعد'],
-  ['{service}','الخدمة'], ['{therapist}','المعالج'], ['{clinic}','اسم العيادة'], ['{phone}','هاتف العيادة'],
+  ['{service}','الخدمة'], ['{therapist}','المعالج'], ['{clinic}','اسم المركز'], ['{phone}','هاتف المركز'],
 ];
 function ReminderTemplateModal({value, vars, onSave, onClose}){
   const [txt,setTxt] = useState(value);
@@ -2172,18 +2172,25 @@ function toMin(t){ const m = String(t||'').match(/^(\d{1,2}):(\d{2})/); return m
 function fromMin(n){ return String(Math.floor(n/60)).padStart(2,'0') + ':' + String(n%60).padStart(2,'0'); }
 // مدة الخدمة من «الخدمات والأسعار»؛ الخدمات بلا مدة (كالباقات) تُعامل كساعة
 function svcDuration(services, name){ const s=(services||[]).find(x=>x.name===name); const d=Number(s&&s.duration)||0; return d>0 ? d : 60; }
+// تكلفة الجلسة كما كُتبت يدوياً في الموعد (لا تُفترض من سعر الخدمة)
+const aptHasCost = (a)=> !!a && a.cost!=='' && a.cost!=null && !isNaN(Number(a.cost));
+function aptCost(a, services){ return aptHasCost(a) ? Number(a.cost) : 0; }
 function aptTherName(a, patients){ return a.therapist || ((patients||[]).find(p=>String(p.id)===String(a.patientId))||{}).assignedTherapist || ''; }
+// كل من يعمل في الموعد (المعالج الأساسي + المساعد) يُحسب مشغولاً طوال مدة الخدمة
+const aptPeople = (a, patients)=> [aptTherName(a, patients), a.assistant].filter(Boolean).map(n=>({name:n, key:normName(n)}));
 function findTherapistConflict(apt, appointments, services, patients){
   if(apt.status==='cancelled' || apt.status==='missed') return null;
-  const ther = aptTherName(apt, patients); const s = toMin(apt.time);
-  if(!ther || !apt.date || s==null) return null;
+  const mine = aptPeople(apt, patients); const s = toMin(apt.time);
+  if(!mine.length || !apt.date || s==null) return null;
   const e = s + svcDuration(services, apt.service);
   for(const x of (appointments||[])){
     if(x.id===apt.id || x.date!==apt.date || x.status==='cancelled' || x.status==='missed') continue;
-    if(normName(aptTherName(x, patients)) !== normName(ther)) continue;
+    const theirs = aptPeople(x, patients);
+    const who = mine.find(m=>theirs.some(t=>t.key===m.key));
+    if(!who) continue;
     const xs = toMin(x.time); if(xs==null) continue;
     const xe = xs + svcDuration(services, x.service);
-    if(s < xe && xs < e) return {...x, _start:xs, _end:xe};
+    if(s < xe && xs < e) return {...x, _start:xs, _end:xe, _who:who.name};
   }
   return null;
 }
@@ -2390,7 +2397,7 @@ function Dashboard({navigate}){
 h2{font-size:16px;color:#0B3D5C;border-right:4px solid #B8893A;padding-right:10px;margin:22px 0 10px}
 table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px solid #e2e8f0;font-size:13px;text-align:right}th{background:#0B3D5C;color:#fff}
 .foot{margin-top:26px;text-align:center;font-size:12px;color:#94a3b8}@media print{.noprint{display:none}}</style></head><body>
-<div class="h"><h1>📊 تقرير المالك — ${settings.clinicName||'Motion Clinic'}</h1><p>${new Date().toLocaleDateString('ar-EG',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</p></div>
+<div class="h"><h1>📊 تقرير المالك — ${settings.clinicName||'Motion Center'}</h1><p>${new Date().toLocaleDateString('ar-EG',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</p></div>
 <div class="cards">
 ${card(patients.length,'إجمالي المرضى','#0B3D5C')}
 ${card(newThisMonth,'مرضى جدد هذا الشهر','#059669')}
@@ -2403,7 +2410,7 @@ ${card(fmt(outstanding)+' '+cur,'ذمم مستحقة','#dc2626')}
 </div>
 <h2>عائد كل مصدر تسويقي (ROI)</h2>
 <table><thead><tr><th>المصدر</th><th>عدد المرضى</th><th style="text-align:left">إجمالي الإيراد</th><th style="text-align:left">متوسط/مريض</th></tr></thead><tbody>${srcTr||'<tr><td colspan=4 style="text-align:center;color:#888">لا بيانات</td></tr>'}</tbody></table>
-<div class="foot">${settings.clinicName||'Motion Clinic'} — ${settings.phone||''}</div>
+<div class="foot">${settings.clinicName||'Motion Center'} — ${settings.phone||''}</div>
 <div class="noprint" style="text-align:center;margin-top:20px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 30px;border-radius:10px;font-family:Cairo;font-size:15px;font-weight:700;cursor:pointer">🖨️ طباعة / PDF</button></div>
 </body></html>`); w.document.close();
   };
@@ -3551,8 +3558,8 @@ function RecommendationsTab({patient, settings}){
                 <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
                   <div style={{width:40,height:40,borderRadius:12,background:'linear-gradient(135deg,var(--accent),#f59e0b)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>🏥</div>
                   <div>
-                    <div style={{fontWeight:900,fontSize:15}}>{settings?.clinicName||'Motion Clinic'}</div>
-                    <div style={{fontSize:11,opacity:0.6}}>عيادة الحركة — دمشق</div>
+                    <div style={{fontWeight:900,fontSize:15}}>{settings?.clinicName||'Motion Center'}</div>
+                    <div style={{fontSize:11,opacity:0.6}}>مركز الحركة — دمشق</div>
                   </div>
                 </div>
                 <div style={{background:'rgba(255,255,255,0.1)',borderRadius:8,padding:'8px 12px',marginBottom:12,fontSize:13,fontWeight:700}}>
@@ -4007,8 +4014,11 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
     patientId:patientId||'', patientName:patient?.name||'',
     date:today(), time:'10:00', service:'', status:'confirmed',
     notes:'', therapist:(patient?.assignedTherapist)||settings.therapistName,
+    assistant:'', cost:'',
   });
   const f=(k,v)=>{ setConflict(null); setForm(p=>({...p,[k]:v})); };
+  const svcPriceOf = (name)=> Number(((services||[]).find(s=>s.name===name)||{}).price)||0;
+  const pickService = (v)=> f('service', v);   // تكلفة الجلسة تُكتب يدوياً فقط
   const pickPatient=(pid)=>{
     const px = patients.find(x=>x.id===pid);
     setConflict(null);
@@ -4018,8 +4028,10 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
     if(!form.date||!form.time){alert('التاريخ والوقت مطلوبان');return;}
     if(!form.patientId){alert('المريض مطلوب');return;}
     if(!form.service){alert('⚠️ يجب اختيار نوع الخدمة قبل حفظ الموعد.');return;}
+    if(form.assistant && normName(form.assistant)===normName(form.therapist)){alert('المعالج المساعد يجب أن يكون شخصاً آخر غير المعالج الأساسي.');return;}
     const p = patients.find(x=>x.id===form.patientId);
-    const data={...form,patientName:p?.name||form.patientName,therapist:form.therapist||(p&&p.assignedTherapist)||settings.therapistName};
+    const cost = (form.cost===''||form.cost==null) ? '' : Number(form.cost);
+    const data={...form, cost, patientName:p?.name||form.patientName,therapist:form.therapist||(p&&p.assignedTherapist)||settings.therapistName};
     const probe = isEdit ? {...data, id:appointment.id} : data;
     const x = findTherapistConflict(probe, appointments, services, patients);
     if(x){ setConflict({x, slots: freeSlotsFor(probe, appointments, services, patients, 8)}); return; }
@@ -4051,11 +4063,21 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
             <TF label="التاريخ" type="date" value={form.date} onChange={v=>f('date',v)}/>
             <TF label="الوقت" type="time" value={form.time} onChange={v=>f('time',v)}/>
           </div>
-          <SF label="نوع الخدمة *" value={form.service} onChange={v=>f('service',v)}
+          <SF label="نوع الخدمة *" value={form.service} onChange={pickService}
               options={[{value:'',label:'— اختر نوع الخدمة —'}, ...(services||[]).filter(s=>s.active).map(s=>({value:s.name,label:s.name}))]}/>
           <div className="form-row">
             <StaffSelect label="المعالج" value={form.therapist} onChange={v=>f('therapist',v)}/>
+            <StaffSelect label="المعالج المساعد (اختياري)" value={form.assistant||''} onChange={v=>f('assistant',v)}/>
+          </div>
+          <div className="form-row">
             <SF label="الحالة" value={form.status} onChange={v=>f('status',v)} options={['confirmed','pending','completed','cancelled','missed']}/>
+            {(
+              <Field label={`💰 تكلفة الجلسة (${settings.currency||'ل.س'})`}>
+                <input className="input" type="number" min="0" value={form.cost??''} onChange={e=>f('cost', e.target.value===''?'':Number(e.target.value))}/>
+                {form.service && svcPriceOf(form.service)>0 &&
+                  <div style={{fontSize:11.5,color:'var(--text-light)',marginTop:3}}>للمرجع: سعر الخدمة في «الخدمات والأسعار» {fmt(svcPriceOf(form.service))}</div>}
+              </Field>
+            )}
           </div>
           <TA label="ملاحظات" value={form.notes} onChange={v=>f('notes',v)} rows={2}/>
           {conflict && (
@@ -4063,7 +4085,7 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
               <div style={{width:'100%'}}>
                 <div style={{fontWeight:800,marginBottom:4}}>⛔ لا يمكن الحجز — المعالج مشغول</div>
                 <div style={{fontSize:13}}>
-                  {aptTherName(form,patients)} لديه موعد مع <strong>{xName}</strong> ({conflict.x.service||'—'}) من {fromMin(conflict.x._start)} إلى {fromMin(conflict.x._end)}.
+                  {conflict.x._who || aptTherName(form,patients)} لديه موعد مع <strong>{xName}</strong> ({conflict.x.service||'—'}) من {fromMin(conflict.x._start)} إلى {fromMin(conflict.x._end)}.
                 </div>
                 {conflict.slots.length>0 ? (
                   <div style={{marginTop:8}}>
@@ -4479,7 +4501,7 @@ function NutritionPage({navigate}){
     const gender = p?.gender || 'male';
     const bmi = (w && h && h!=='?') ? ((+w)/(((+h)/100)**2)).toFixed(1) : '?';
     const chronic = form.chronic.map(c=>chronicMap[c]||c).join('، ')||'لا يوجد';
-    return `أنت الخبير الرقمي لعيادة Motion Clinic (عيادة الحركة) في دمشق، سوريا. مهمتك تحليل الحالة السريرية وإعداد خطة تغذية علاجية شاملة مناسبة لشعب دمشق.
+    return `أنت الخبير الرقمي لمركز Motion Center (مركز الحركة) في دمشق، سوريا. مهمتك تحليل الحالة السريرية وإعداد خطة تغذية علاجية شاملة مناسبة لشعب دمشق.
 
 === بيانات المريض ===
 الاسم: ${p?.name||'غير محدد'}
@@ -4585,7 +4607,7 @@ BMR بمعادلة Mifflin-St Jeor | TDEE | هدف السعرات | توزيع: 
   const buildCardHTML = (forPrint) => {
     const a = analysis;
     const pName = selectedP?.name || resultName || 'المريض';
-    const clinic = settings.clinicName || 'Motion Clinic';
+    const clinic = settings.clinicName || 'Motion Center';
     const phone = settings.phone || '';
     const therapist = settings.therapistName || '';
     const date = new Date().toLocaleDateString('ar-EG');
@@ -4675,7 +4697,7 @@ ${forPrint?'<div class="noprint" style="text-align:center;margin:18px"><button o
   const shareWhatsApp = () => {
     const a = analysis;
     const pName = selectedP?.name || resultName || 'المريض';
-    const clinic = settings.clinicName || 'Motion Clinic';
+    const clinic = settings.clinicName || 'Motion Center';
     let msg = `🥗 *بطاقة التغذية العلاجية*\n${clinic}\n────────────\n👤 ${pName}\n📅 ${new Date().toLocaleDateString('ar-EG')}\n\n`;
     if(a.ok){
       msg += `📊 *مؤشراتك:*\n• BMI: ${a.bmi} (${a.bmiClass})\n• الوزن المثالي: ${a.idealW} كغ${a.excessW>0?` (زائد ${a.excessW} كغ)`:''}\n• السعرات اليومية: ${a.targetCal} سعرة\n• بروتين: ${a.protein}غ | كربوهيدرات: ${a.carb}غ | دهون: ${a.fat}غ\n• الماء: ${a.water} لتر يومياً\n\n`;
@@ -5100,7 +5122,7 @@ function CalendarPage(){
   const offerSlot = (apt,p) => {
     const ph = waPhone(p);
     if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
-    const msg=`مرحباً ${p.name} 🌿\nتوفّر موعد يوم ${apt.date} الساعة ${apt.time} مع د. ${apptTher(apt)} في ${settings.clinicName||'Motion Clinic'}.\nإذا كنت ترغب بأخذ هذا الموعد، يرجى الرد للتأكيد. 🌸`;
+    const msg=`مرحباً ${p.name} 🌿\nتوفّر موعد يوم ${apt.date} الساعة ${apt.time} مع د. ${apptTher(apt)} في ${settings.clinicName||'Motion Center'}.\nإذا كنت ترغب بأخذ هذا الموعد، يرجى الرد للتأكيد. 🌸`;
     window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg),'_blank');
     markOffered(apt,p);
   };
@@ -5122,7 +5144,7 @@ function CalendarPage(){
     if(!confirm(`حجز موعد ${apt.date} الساعة ${apt.time} للمريض «${p.name}»؟`)) return;
     const n = addAppointment({
       id:nextId('APT'), patientId:p.id, patientName:p.name, date:apt.date, time:apt.time,
-      service:apt.service||'', therapist:ther, status:'confirmed',
+      service:apt.service||'', therapist:ther, status:'confirmed', cost:'',
       notes:`بديل عن موعد ملغى (${pname(apt)})`,
     });
     updateAppointment(apt.id,{...apt, replacedBy:n.id});
@@ -5130,7 +5152,7 @@ function CalendarPage(){
     setPickFor(null);
     const ph = waPhone(p);
     if(ph && confirm('✅ تم الحجز. إرسال تأكيد للمريض عبر واتساب؟')){
-      const msg=`مرحباً ${p.name} 🌿\nتم تأكيد موعدك يوم ${apt.date} الساعة ${apt.time} مع د. ${ther} في ${settings.clinicName||'Motion Clinic'}.\nبانتظارك 🙏`;
+      const msg=`مرحباً ${p.name} 🌿\nتم تأكيد موعدك يوم ${apt.date} الساعة ${apt.time} مع د. ${ther} في ${settings.clinicName||'Motion Center'}.\nبانتظارك 🙏`;
       window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg),'_blank');
     }
   };
@@ -5523,24 +5545,53 @@ function FinancePage({navigate}){
     const r = svcRow(s.type||'غير محدد');
     r.ses++; if(s.isFree) r.free++;
     r.sesPaid += Number(s.paid)||0;
-    const t = s.therapistName||'غير محدد'; r.ther[t]=(r.ther[t]||0)+1;
   });
+  // المواعيد هي أساس التقرير: من عمل الجلسة (المعالج + المساعد) وتكلفتها
   rApt.forEach(a=>{
     const r = svcRow(a.service||'غير محدد');
     r.apt++;
-    if(a.status==='completed') r.done++;
     if(a.status==='cancelled'||a.status==='missed') r.lost++;
+    if(a.status==='completed'){
+      r.done++;
+      r.cost = (r.cost||0) + aptCost(a, services);
+      const t = aptTherName(a, patients)||'غير محدد'; r.ther[t]=(r.ther[t]||0)+1;
+      if(a.assistant){ const k = a.assistant+' (مساعد)'; r.ther[k]=(r.ther[k]||0)+1; }
+    }
   });
   rInv.forEach(f=>{ const r = svcRow(f.serviceLabel||'غير محدد'); r.inv++; r.invPaid += Number(f.paid)||0; });
   const rSvcRows = Object.values(rSvc).map(r=>{
     const price = svcPrice[r.name] || 0;
-    const expected = price * (r.ses - r.free);
-    return {...r, price, expected, diff: r.sesPaid - expected,
+    const expected = r.cost || 0;                       // تكلفة المواعيد المكتملة
+    return {...r, price, expected, diff: r.invPaid - expected,
       therTxt: Object.entries(r.ther).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} (${v})`).join('، ')};
-  }).sort((a,b)=> b.ses-a.ses || b.apt-a.apt);
+  }).sort((a,b)=> b.done-a.done || b.apt-a.apt || b.ses-a.ses);
   const rSvcTot = rSvcRows.reduce((t,r)=>({ses:t.ses+r.ses, free:t.free+r.free, apt:t.apt+r.apt, done:t.done+r.done, lost:t.lost+r.lost,
     expected:t.expected+r.expected, sesPaid:t.sesPaid+r.sesPaid, inv:t.inv+r.inv, invPaid:t.invPaid+r.invPaid}),
     {ses:0,free:0,apt:0,done:0,lost:0,expected:0,sesPaid:0,inv:0,invPaid:0});
+
+  // ═══ تقرير المواعيد المفصّل: من عمل الجلسة + تكلفتها + المدفوع (من الفواتير) ═══
+  const aptStLabel = {completed:'✅ حضر', confirmed:'📅 مؤكد', pending:'⏳ معلّق', missed:'🚫 غاب', cancelled:'❌ ملغى'};
+  const invByPD = {}; rInv.forEach(f=>{ const k=String(f.patientId)+'|'+f.date; invByPD[k]=(invByPD[k]||0)+(Number(f.paid)||0); });
+  const seenPD = new Set();
+  const rAptDetail = [...rApt].sort((a,b)=>(a.date+(a.time||'')).localeCompare(b.date+(b.time||''))).map(a=>{
+    const k = String(a.patientId)+'|'+a.date; const paid = seenPD.has(k) ? null : (invByPD[k]||0); seenPD.add(k);
+    return {...a, _pname: pname(a), _ther: aptTherName(a, patients)||'—', _cost: aptCost(a, services), _paid: paid};
+  });
+  const rDone = rAptDetail.filter(a=>a.status==='completed');
+  const rDoneCost = rDone.reduce((t,a)=>t+a._cost,0);
+  const rDoneNoCost = rDone.filter(a=>!aptHasCost(a)).length;
+  const rDetailPaid = rAptDetail.reduce((t,a)=>t+(a._paid||0),0);
+  const rByPerson = {};
+  const personRow = (n)=> rByPerson[n] || (rByPerson[n] = {main:0, mainCost:0, asst:0, asstCost:0, missed:0});
+  rApt.forEach(a=>{
+    const m = aptTherName(a, patients)||'غير محدد';
+    if(a.status==='missed'||a.status==='cancelled'){ personRow(m).missed++; return; }
+    if(a.status!=='completed') return;
+    const c = aptCost(a, services);
+    const o = personRow(m); o.main++; o.mainCost += c;
+    if(a.assistant){ const q = personRow(a.assistant); q.asst++; q.asstCost += c; }
+  });
+  const rPersonRows = Object.entries(rByPerson).sort((a,b)=>(b[1].main+b[1].asst)-(a[1].main+a[1].asst));
 
   const printPeriodic = () => {
     const w = window.open('','_blank');
@@ -5557,7 +5608,7 @@ h2{font-size:15px;color:#0B3D5C;border-right:4px solid #B8893A;padding-right:10p
 table{width:100%;border-collapse:collapse}td,th{padding:7px 10px;border:1px solid #e2e8f0;font-size:12.5px;text-align:right}th{background:#f8fafc;font-weight:700}
 .foot{margin-top:26px;text-align:center;font-size:12px;color:#94a3b8}
 @media print{.noprint{display:none}}</style></head><body>
-<div class="h"><h1>🧾 تقرير ${rKindLabel} — ${settings.clinicName||'Motion Clinic'}</h1><p>${rRange.label} • صدر في ${new Date().toLocaleDateString('ar-EG')}</p></div>
+<div class="h"><h1>🧾 تقرير ${rKindLabel} — ${settings.clinicName||'Motion Center'}</h1><p>${rRange.label} • صدر في ${new Date().toLocaleDateString('ar-EG')}</p></div>
 <div class="cards">
   <div class="c"><div class="v" style="color:#7c3aed">${rSes.length}</div><div class="l">عدد الجلسات</div></div>
   <div class="c"><div class="v" style="color:#0284c7">${rInv.length}</div><div class="l">عدد الفواتير</div></div>
@@ -5572,10 +5623,17 @@ ${tr(['الخصومات', fmt(rDisc)+' '+cur, ''])}
 ${tr(['المتبقي (ذمم)', fmt(rRem)+' '+cur, ''])}
 ${tr(['صافي الربح', fmt(rNet)+' '+cur, ''])}
 </table>
-<h2>التقرير حسب نوع الخدمة</h2><table><tr><th>الخدمة</th><th>جلسات</th><th>مجانية</th><th>مواعيد (حضر / ملغى-غياب)</th><th>السعر</th><th>المتوقع</th><th>المحصّل بالجلسات</th><th>الفرق</th><th>فواتير</th><th>المعالجون</th></tr>
-${rSvcRows.map(r=>tr([r.name, r.ses, r.free, r.apt+' ('+r.done+' / '+r.lost+')', r.price?fmt(r.price):'—', fmt(r.expected), fmt(r.sesPaid),
-  '<b style="color:'+(r.diff<0?'#dc2626':'#059669')+'">'+fmt(r.diff)+'</b>', r.inv+' • '+fmt(r.invPaid), r.therTxt||'—'])).join('')||'<tr><td colspan=10 style="text-align:center;color:#888">لا بيانات</td></tr>'}
-${rSvcRows.length?tr(['<b>الإجمالي</b>','<b>'+rSvcTot.ses+'</b>',rSvcTot.free,rSvcTot.apt+' ('+rSvcTot.done+' / '+rSvcTot.lost+')','','<b>'+fmt(rSvcTot.expected)+'</b>','<b>'+fmt(rSvcTot.sesPaid)+'</b>','<b>'+fmt(rSvcTot.sesPaid-rSvcTot.expected)+'</b>',rSvcTot.inv+' • '+fmt(rSvcTot.invPaid),'']):''}
+<h2>التقرير حسب نوع الخدمة (مبني على المواعيد)</h2><table><tr><th>الخدمة</th><th>مواعيد</th><th>حضر</th><th>ملغى/غياب</th><th>السعر</th><th>التكلفة (المكتملة)</th><th>المحصّل بالفواتير</th><th>الفرق عن الفواتير</th><th>جلسات موثّقة (مجانية)</th><th>من عمل الجلسات</th></tr>
+${rSvcRows.map(r=>tr([r.name, r.apt, r.done, r.lost, r.price?fmt(r.price):'—', fmt(r.expected), r.inv+' • '+fmt(r.invPaid),
+  '<b style="color:'+(r.diff<0?'#dc2626':'#059669')+'">'+fmt(r.diff)+'</b>', r.ses+(r.free?' ('+r.free+')':''), r.therTxt||'—'])).join('')||'<tr><td colspan=10 style="text-align:center;color:#888">لا بيانات</td></tr>'}
+${rSvcRows.length?tr(['<b>الإجمالي</b>',rSvcTot.apt,'<b>'+rSvcTot.done+'</b>',rSvcTot.lost,'','<b>'+fmt(rSvcTot.expected)+'</b>','<b>'+rSvcTot.inv+' • '+fmt(rSvcTot.invPaid)+'</b>','<b>'+fmt(rSvcTot.invPaid-rSvcTot.expected)+'</b>',rSvcTot.ses+(rSvcTot.free?' ('+rSvcTot.free+')':''),'']):''}
+</table>
+<h2>مجاميع المعالجين (من المواعيد)</h2><table><tr><th>المعالج</th><th>جلسات كمعالج</th><th>قيمتها</th><th>جلسات كمساعد</th><th>قيمتها</th><th>غياب/إلغاء</th></tr>
+${rPersonRows.map(([k,o])=>tr([k,o.main,fmt(o.mainCost),o.asst,fmt(o.asstCost),o.missed])).join('')||'<tr><td colspan=6 style="text-align:center;color:#888">لا بيانات</td></tr>'}
+</table>
+<h2>تقرير المواعيد المفصّل (${rAptDetail.length})</h2><table><tr><th>التاريخ</th><th>الوقت</th><th>المريض</th><th>الخدمة</th><th>المعالج</th><th>المساعد</th><th>الحالة</th><th>التكلفة</th><th>المدفوع (فواتير)</th></tr>
+${rAptDetail.map(a=>tr([a.date, a.time||'', a._pname, a.service||'—', a._ther, a.assistant||'—', aptStLabel[a.status]||a.status||'—', aptHasCost(a)?fmt(a._cost):'—', a._paid==null?'↑':fmt(a._paid)])).join('')||'<tr><td colspan=9 style="text-align:center;color:#888">لا مواعيد</td></tr>'}
+${rAptDetail.length?tr(['<b>الإجمالي</b>','','','','','','<b>'+rDone.length+' حضر</b>','<b>'+fmt(rDoneCost)+'</b>','<b>'+fmt(rDetailPaid)+'</b>']):''}
 </table>
 <h2>التفصيل اليومي</h2><table><tr><th>التاريخ</th><th>جلسات</th><th>مواعيد</th><th>فواتير</th><th>محصّل</th><th>مصروف</th></tr>
 ${rDays.map(x=>tr([x.d,x.ses,x.apt,x.inv,fmt(x.paid),fmt(x.exp)])).join('')||'<tr><td colspan=6 style="text-align:center;color:#888">—</td></tr>'}
@@ -5589,7 +5647,7 @@ ${rExpRows.map(([k,v])=>tr([k,fmt(v)+' '+cur])).join('')||'<tr><td colspan=2 sty
 <h2>الفواتير</h2><table><tr><th>رقم</th><th>التاريخ</th><th>المريض</th><th>الخدمة</th><th>الإجمالي</th><th>مدفوع</th><th>متبقي</th><th>الحالة</th></tr>
 ${rInv.map(f=>tr([f.id,f.date,pname(f),f.serviceLabel||'—',fmt(f.total||0),fmt(f.paid||0),fmt(f.remaining||0),f.status||''])).join('')||'<tr><td colspan=8 style="text-align:center;color:#888">لا فواتير</td></tr>'}
 </table>
-<div class="foot">${settings.clinicName||'Motion Clinic'} — ${settings.phone||''}</div>
+<div class="foot">${settings.clinicName||'Motion Center'} — ${settings.phone||''}</div>
 <div class="noprint" style="text-align:center;margin-top:18px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 28px;border-radius:10px;font-size:15px;font-family:Cairo;cursor:pointer;font-weight:700">🖨️ طباعة / حفظ PDF</button></div>
 </body></html>`);
     w.document.close();
@@ -5611,7 +5669,7 @@ h2{font-size:16px;color:#0B3D5C;border-right:4px solid #B8893A;padding-right:10p
 table{width:100%;border-collapse:collapse}td,th{padding:8px 12px;border:1px solid #e2e8f0;font-size:13px;text-align:right}th{background:#f8fafc;font-weight:700}
 .foot{margin-top:30px;text-align:center;font-size:12px;color:#94a3b8}
 @media print{.noprint{display:none}}</style></head><body>
-<div class="h"><h1>📊 التقرير المالي — ${settings.clinicName||'Motion Clinic'}</h1><p>الفترة: ${periodLabel} • تاريخ الإصدار: ${now.toLocaleDateString('ar-EG')}</p></div>
+<div class="h"><h1>📊 التقرير المالي — ${settings.clinicName||'Motion Center'}</h1><p>الفترة: ${periodLabel} • تاريخ الإصدار: ${now.toLocaleDateString('ar-EG')}</p></div>
 <div class="cards">
   <div class="c"><div class="v" style="color:#059669">${fmt(totalRev)}</div><div class="l">إيرادات محصّلة (${cur})</div></div>
   <div class="c"><div class="v" style="color:#d97706">${fmt(totalPend)}</div><div class="l">مستحقات غير محصّلة</div></div>
@@ -5632,7 +5690,7 @@ ${expCats.map(([c,v])=>row(c, fmt(v)+' '+cur, (totalExp>0?Math.round(v/totalExp*
 <h2>أعلى الخدمات إيراداً</h2><table><tr><th>الخدمة</th><th>الإيراد</th></tr>
 ${topServices.map(([s,v])=>row(s, fmt(v)+' '+cur)).join('')||'<tr><td colspan=2 style="text-align:center;color:#888">لا بيانات</td></tr>'}
 </table>
-<div class="foot">${settings.clinicName||'Motion Clinic'} — ${settings.phone||''}</div>
+<div class="foot">${settings.clinicName||'Motion Center'} — ${settings.phone||''}</div>
 <div class="noprint" style="text-align:center;margin-top:20px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 28px;border-radius:10px;font-size:15px;font-family:Cairo;cursor:pointer;font-weight:700">🖨️ طباعة / حفظ PDF</button></div>
 </body></html>`);
     w.document.close();
@@ -5665,7 +5723,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
 .sign{display:flex;justify-content:space-between;margin-top:46px;font-size:13px}.sign div{text-align:center;border-top:1px solid #cbd5e1;padding-top:6px;width:200px}
 @media print{.noprint{display:none}}</style></head><body>
 <div class="top">
-  <div style="display:flex;gap:12px;align-items:center">${logo}<div class="clinic"><h1>${settings.clinicName||'Motion Clinic'}</h1><p>${settings.address||''} ${settings.phone?(' • '+settings.phone):''}</p>${settings.taxNum?`<p>الرقم الضريبي: ${settings.taxNum}</p>`:''}</div></div>
+  <div style="display:flex;gap:12px;align-items:center">${logo}<div class="clinic"><h1>${settings.clinicName||'Motion Center'}</h1><p>${settings.address||''} ${settings.phone?(' • '+settings.phone):''}</p>${settings.taxNum?`<p>الرقم الضريبي: ${settings.taxNum}</p>`:''}</div></div>
   <div class="inv-meta"><div class="t">فاتورة</div><p>رقم: <b>${f.id}</b></p><p>التاريخ: ${f.date||today()}</p><div class="badge">${f.status||''}</div></div>
 </div>
 <div class="party">
@@ -5680,7 +5738,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
   ${f.remaining>0?`<tr class="grand"><td>المتبقي</td><td style="text-align:left">${fmt(f.remaining)} ${cur}</td></tr>`:`<tr class="grand"><td>الحالة</td><td style="text-align:left">مدفوعة بالكامل ✓</td></tr>`}
 </table>
 <div class="sign"><div>توقيع المريض</div><div>توقيع/ختم العيادة</div></div>
-<div class="foot">شكراً لثقتكم — ${settings.clinicName||'Motion Clinic'}${settings.clinicSlogan?(' • '+settings.clinicSlogan):''}<br/>${settings.website||''}</div>
+<div class="foot">شكراً لثقتكم — ${settings.clinicName||'Motion Center'}${settings.clinicSlogan?(' • '+settings.clinicSlogan):''}<br/>${settings.website||''}</div>
 <div class="noprint" style="text-align:center;margin-top:22px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 30px;border-radius:10px;font-size:15px;font-family:Cairo;cursor:pointer;font-weight:700">🖨️ طباعة / حفظ PDF</button></div>
 </body></html>`);
     w.document.close();
@@ -5692,7 +5750,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
     let ph = (p.phone||'').replace(/[^0-9]/g,'');
     if(ph.startsWith('0')) ph = '963'+ph.slice(1);
     if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
-    const msg = `مرحباً ${p.name||f.patientName||''} 🌿\nنذكّركم بلطف بوجود مبلغ متبقٍّ على فاتورتكم رقم ${f.id} بقيمة ${fmt(f.remaining)} ${cur}.\nنتمنى لكم دوام الصحة 🙏\n${settings.clinicName||'Motion Clinic'}`;
+    const msg = `مرحباً ${p.name||f.patientName||''} 🌿\nنذكّركم بلطف بوجود مبلغ متبقٍّ على فاتورتكم رقم ${f.id} بقيمة ${fmt(f.remaining)} ${cur}.\nنتمنى لكم دوام الصحة 🙏\n${settings.clinicName||'Motion Center'}`;
     window.open(`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`,'_blank');
   };
 
@@ -5854,7 +5912,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
           const p = patients.find(x=>String(x.id)===String(r.patientId)) || {};
           let ph=(p.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
           if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
-          const msg = `مرحباً ${r.name} 🌿\nنذكّركم بلطف بوجود مبلغ متبقٍّ إجمالي قدره ${fmt(r.total)} ${cur} على ${r.count} فاتورة.\nشكراً لتعاونكم 🙏\n${settings.clinicName||'Motion Clinic'}`;
+          const msg = `مرحباً ${r.name} 🌿\nنذكّركم بلطف بوجود مبلغ متبقٍّ إجمالي قدره ${fmt(r.total)} ${cur} على ${r.count} فاتورة.\nشكراً لتعاونكم 🙏\n${settings.clinicName||'Motion Center'}`;
           window.open(`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`,'_blank');
         };
         const printAll = () => {
@@ -5865,7 +5923,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
 .h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:22px;border-radius:12px;margin-bottom:18px}h1{font-size:20px}p{font-size:12px;opacity:.9;margin-top:3px}
 table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px solid #e2e8f0;font-size:13px;text-align:right}th{background:#0B3D5C;color:#fff}
 .tot{background:#fef2f2;font-weight:800;font-size:15px}@media print{.noprint{display:none}}</style></head><body>
-<div class="h"><h1>💳 كشف الذمم (المبالغ المستحقة)</h1><p>${settings.clinicName||'Motion Clinic'} • ${new Date().toLocaleDateString('ar-EG')}</p></div>
+<div class="h"><h1>💳 كشف الذمم (المبالغ المستحقة)</h1><p>${settings.clinicName||'Motion Center'} • ${new Date().toLocaleDateString('ar-EG')}</p></div>
 <table><thead><tr><th>#</th><th>المريض</th><th>عدد الفواتير</th><th>أقدم تاريخ</th><th style="text-align:left">المتبقي</th></tr></thead><tbody>${tr}
 <tr class="tot"><td colspan="4">الإجمالي</td><td style="text-align:left;color:#dc2626">${fmt(grand)} ${cur}</td></tr></tbody></table>
 <div class="noprint" style="text-align:center;margin-top:20px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 28px;border-radius:10px;font-family:Cairo;font-size:15px;font-weight:700;cursor:pointer">🖨️ طباعة / PDF</button></div>
@@ -5972,40 +6030,37 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
             ))}
           </div>
 
-          {/* التقرير حسب نوع الخدمة */}
+          {/* التقرير حسب نوع الخدمة — مبني على المواعيد */}
           <div className="card" style={{borderTop:'3px solid var(--accent)'}}>
             <div className="card-header"><h3>🛠️ التقرير حسب نوع الخدمة — {rRange.label}</h3></div>
             <div style={{overflowX:'auto'}}>
               <table className="data-table">
                 <thead><tr>
-                  <th>الخدمة</th><th>جلسات</th><th>مجانية</th><th>مواعيد</th><th>حضر</th><th>ملغى/غياب</th>
-                  <th>السعر</th><th>المتوقع</th><th>المحصّل بالجلسات</th><th>الفرق</th><th>فواتير</th><th>المعالجون</th>
+                  <th>الخدمة</th><th>مواعيد</th><th>حضر</th><th>ملغى/غياب</th><th>السعر</th><th>التكلفة (المكتملة)</th>
+                  <th>المحصّل بالفواتير</th><th>الفرق عن الفواتير</th><th>جلسات موثّقة</th><th>من عمل الجلسات</th>
                 </tr></thead>
                 <tbody>
                   {rSvcRows.map(r=>(
                     <tr key={r.name}>
                       <td style={{fontWeight:800}}>{r.name}{!r.price && r.name!=='غير محدد' && <span title="غير موجودة في الخدمات والأسعار" style={{color:'var(--orange)'}}> ⚠️</span>}</td>
-                      <td style={{fontWeight:700}}>{r.ses}</td>
-                      <td>{r.free||'—'}</td>
                       <td>{r.apt}</td>
                       <td style={{color:'var(--green)',fontWeight:700}}>{r.done}</td>
                       <td style={{color:r.lost?'var(--red)':'var(--text-light)',fontWeight:700}}>{r.lost}</td>
                       <td>{r.price?fmt(r.price):'—'}</td>
-                      <td>{fmt(r.expected)}</td>
-                      <td style={{color:'var(--green)',fontWeight:700}}>{fmt(r.sesPaid)}</td>
+                      <td style={{fontWeight:800}}>{fmt(r.expected)}</td>
+                      <td style={{fontSize:12.5}}>{r.inv} · <strong style={{color:'var(--green)'}}>{fmt(r.invPaid)}</strong></td>
                       <td style={{color:r.diff<0?'var(--red)':'var(--green)',fontWeight:800}}>{fmt(r.diff)}</td>
-                      <td style={{fontSize:12}}>{r.inv} · {fmt(r.invPaid)}</td>
+                      <td>{r.ses}{r.free?<span style={{fontSize:11,color:'var(--orange)'}}> ({r.free} مجانية)</span>:''}</td>
                       <td style={{fontSize:12,color:'var(--text-mid)'}}>{r.therTxt||'—'}</td>
                     </tr>
                   ))}
                   {rSvcRows.length>0&&(
                     <tr style={{background:'var(--surface)',fontWeight:800}}>
-                      <td>الإجمالي</td><td>{rSvcTot.ses}</td><td>{rSvcTot.free}</td><td>{rSvcTot.apt}</td>
-                      <td style={{color:'var(--green)'}}>{rSvcTot.done}</td><td style={{color:'var(--red)'}}>{rSvcTot.lost}</td>
+                      <td>الإجمالي</td><td>{rSvcTot.apt}</td><td style={{color:'var(--green)'}}>{rSvcTot.done}</td><td style={{color:'var(--red)'}}>{rSvcTot.lost}</td>
                       <td></td><td>{fmt(rSvcTot.expected)}</td>
-                      <td style={{color:'var(--green)'}}>{fmt(rSvcTot.sesPaid)}</td>
-                      <td style={{color:(rSvcTot.sesPaid-rSvcTot.expected)<0?'var(--red)':'var(--green)'}}>{fmt(rSvcTot.sesPaid-rSvcTot.expected)}</td>
-                      <td style={{fontSize:12}}>{rSvcTot.inv} · {fmt(rSvcTot.invPaid)}</td><td></td>
+                      <td style={{fontSize:12.5}}>{rSvcTot.inv} · {fmt(rSvcTot.invPaid)}</td>
+                      <td style={{color:(rSvcTot.invPaid-rSvcTot.expected)<0?'var(--red)':'var(--green)'}}>{fmt(rSvcTot.invPaid-rSvcTot.expected)}</td>
+                      <td>{rSvcTot.ses}</td><td></td>
                     </tr>
                   )}
                 </tbody>
@@ -6013,8 +6068,44 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px soli
             </div>
             {rSvcRows.length===0&&<div className="empty-state" style={{padding:20}}><p>لا جلسات أو مواعيد في هذه المدة.</p></div>}
             <div style={{padding:'8px 16px',fontSize:11.5,color:'var(--text-light)'}}>
-              «المتوقع» = سعر الخدمة في 🛠️ الخدمات والأسعار × الجلسات غير المجانية. «الفرق» بالأحمر يعني أن المحصّل أقل من المتوقع.
+              «التكلفة» = مجموع «تكلفة الجلسة» المكتوبة يدوياً في المواعيد المكتملة. الإيرادات الفعلية من الفواتير — «الفرق» بالأحمر يعني أن المحصّل بالفواتير أقل من تكلفة الجلسات.
             </div>
+          </div>
+
+          {/* مجاميع المعالجين — من المواعيد */}
+          <div className="card">
+            <div className="card-header"><h3>👥 مجاميع المعالجين — من عمل الجلسات</h3></div>
+            <div style={{overflowX:'auto'}}>
+              <table className="data-table">
+                <thead><tr><th>المعالج</th><th>جلسات كمعالج</th><th>قيمتها</th><th>جلسات كمساعد</th><th>قيمتها</th><th>غياب/إلغاء</th></tr></thead>
+                <tbody>{rPersonRows.map(([k,o])=>(
+                  <tr key={k}><td style={{fontWeight:800}}>{k}</td><td style={{fontWeight:700}}>{o.main}</td><td>{fmt(o.mainCost)} {cur}</td>
+                    <td style={{fontWeight:700}}>{o.asst||'—'}</td><td>{o.asst?fmt(o.asstCost)+' '+cur:'—'}</td><td style={{color:o.missed?'var(--red)':'var(--text-light)'}}>{o.missed}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+            {rPersonRows.length===0&&<div className="empty-state" style={{padding:20}}><p>لا مواعيد مكتملة في هذه المدة.</p></div>}
+          </div>
+
+          {/* تقرير المواعيد المفصّل */}
+          <div className="card">
+            <div className="card-header"><h3>📋 تقرير المواعيد المفصّل ({rAptDetail.length}) — {rDone.length} حضر · تكلفة {fmt(rDoneCost)} {cur}</h3></div>
+            <div style={{overflowX:'auto',maxHeight:520,overflowY:'auto'}}>
+              <table className="data-table">
+                <thead><tr><th>التاريخ</th><th>الوقت</th><th>المريض</th><th>الخدمة</th><th>المعالج</th><th>المساعد</th><th>الحالة</th><th>التكلفة</th><th>المدفوع (فواتير)</th></tr></thead>
+                <tbody>{rAptDetail.map(a=>(
+                  <tr key={a.id} style={{opacity:(a.status==='cancelled'||a.status==='missed')?0.6:1}}>
+                    <td>{a.date}</td><td>{a.time||''}</td><td style={{fontWeight:700}}>{a._pname}</td><td>{a.service||'—'}</td>
+                    <td>{a._ther}</td><td>{a.assistant||'—'}</td><td style={{fontSize:12}}>{aptStLabel[a.status]||a.status||'—'}</td>
+                    <td style={{fontWeight:700}}>{aptHasCost(a)?fmt(a._cost):<span style={{color:a.status==='completed'?'var(--orange)':'var(--text-light)'}}>—</span>}</td>
+                    <td style={{color:a._paid?'var(--green)':'var(--text-light)',fontWeight:700}} title={a._paid==null?'مدفوع هذا اليوم محسوب في السطر الأول للمريض':''}>{a._paid==null?'↑':fmt(a._paid)}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            {rAptDetail.length===0&&<div className="empty-state" style={{padding:20}}><p>لا مواعيد في هذه المدة.</p></div>}
+            {rDoneNoCost>0 && <div className="alert alert-warning" style={{margin:'8px 16px'}}><div>⚠️ {rDoneNoCost} موعد مكتمل لم تُسجَّل له «تكلفة الجلسة» — لا تدخل في مجاميع التكلفة حتى تُكتب في الموعد.</div></div>}
+            <div style={{padding:'8px 16px',fontSize:11.5,color:'var(--text-light)'}}>«المدفوع» = مجموع فواتير المريض في نفس اليوم (يظهر مرة واحدة لكل مريض في اليوم، والسهم ↑ يعني أنه محسوب في السطر السابق).</div>
           </div>
 
           {/* التفصيل اليومي */}
@@ -6580,7 +6671,7 @@ function HEPLibraryPage({navigate}){
   const buildWA=()=>{
     const items=getSelEx();
     const now=new Date().toLocaleDateString('ar-EG');
-    let m='🏥 *Motion Clinic — عيادة الحركة*\n━━━━━━━━━━━━━━━━━━\n';
+    let m='🏥 *Motion Center — مركز الحركة*\n━━━━━━━━━━━━━━━━━━\n';
     if(selP)m+='👤 *المريض:* '+selP.name+'\n';
     if(sessionNote)m+='📋 *'+sessionNote+'*\n';
     m+='📅 *التاريخ:* '+now+'\n👨‍⚕️ *المعالج:* '+(settings.therapistName||'د. يامن نزية')+'\n';
@@ -6593,7 +6684,7 @@ function HEPLibraryPage({navigate}){
       m+='▶️ '+item.ex.yt+'\n\n';
     });
     if(therapistNote)m+='━━━━━━━━━━━━━━━━━━\n📌 *ملاحظات:* '+therapistNote+'\n\n';
-    m+='⚠️ _توقف فوراً عند زيادة الألم._\n━━━━━━━━━━━━━━━━━━\n🌐 Motion Clinic | دمشق';
+    m+='⚠️ _توقف فوراً عند زيادة الألم._\n━━━━━━━━━━━━━━━━━━\n🌐 Motion Center | دمشق';
     return m;
   };
 
@@ -6632,7 +6723,7 @@ function HEPLibraryPage({navigate}){
       '.warn{background:#fef3c7;border:1px solid #d97706;padding:10px 14px;border-radius:8px;font-size:11px;color:#92400e;margin-top:20px}'+
       '.foot{display:flex;justify-content:space-between;font-size:11px;color:#94a3b8;margin-top:16px;padding-top:12px;border-top:1px solid #e2e8f0}'+
       '</style></head><body>'+
-      '<div class="ph"><h1>🏥 Motion Clinic — برنامج التمارين العلاجية</h1><p>عيادة الحركة | دمشق، سوريا</p></div>'+
+      '<div class="ph"><h1>🏥 Motion Center — برنامج التمارين العلاجية</h1><p>مركز الحركة | دمشق، سوريا</p></div>'+
       '<div class="pinfo">'+
       '<span>'+(selP?'المريض: '+selP.name:'')+' '+(sessionNote?'| '+sessionNote:'')+'</span>'+
       '<span>'+(settings.therapistName||'')+' | '+now+'</span>'+
@@ -6640,7 +6731,7 @@ function HEPLibraryPage({navigate}){
       exHTML+
       (therapistNote?'<div class="warn">📌 ملاحظات المعالج: '+therapistNote+'</div>':'')+
       '<div class="warn">⚠️ نفّذ التمارين بحسب إرشادات معالجك. توقف فوراً عند زيادة الألم.</div>'+
-      '<div class="foot"><span>Motion Clinic © '+new Date().getFullYear()+'</span><span>'+items.length+' تمارين علاجية</span></div>'+
+      '<div class="foot"><span>Motion Center © '+new Date().getFullYear()+'</span><span>'+items.length+' تمارين علاجية</span></div>'+
       '</body></html>';
     const w=window.open('','_blank');w.document.write(html);w.document.close();setTimeout(()=>w.print(),400);
   };
@@ -6782,7 +6873,7 @@ function HEPLibraryPage({navigate}){
                 <div style={{background:'linear-gradient(135deg,#0f2d4a,#1a4a6e)',borderRadius:'var(--radius)',padding:20,color:'#fff'}}>
                   <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
                     <div style={{width:40,height:40,borderRadius:12,background:'linear-gradient(135deg,var(--accent),#f59e0b)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>🏥</div>
-                    <div><div style={{fontWeight:900,fontSize:15}}>Motion Clinic</div><div style={{fontSize:11,opacity:0.6}}>عيادة الحركة — دمشق</div></div>
+                    <div><div style={{fontWeight:900,fontSize:15}}>Motion Center</div><div style={{fontSize:11,opacity:0.6}}>مركز الحركة — دمشق</div></div>
                   </div>
                   {selP&&<div style={{background:'rgba(255,255,255,0.1)',borderRadius:8,padding:'8px 12px',marginBottom:12,fontSize:13,fontWeight:700}}>👤 {selP.name} {sessionNote&&'| '+sessionNote}</div>}
                   <div style={{display:'flex',flexDirection:'column',gap:7,maxHeight:240,overflowY:'auto'}}>
@@ -7489,7 +7580,7 @@ function SettingsPage(){
   };
 
   const TABS=[
-    ['clinic','🏥 بيانات العيادة'],
+    ['clinic','🏥 بيانات المركز'],
     ['branding','🎨 الهوية والمظهر'],
     ['api','🤖 الذكاء الاصطناعي'],
     ['sheets','📊 Google Sheets'],
@@ -7512,10 +7603,10 @@ function SettingsPage(){
 
       {tab==='clinic'&&(
         <div className="card">
-          <div className="card-header"><h3>🏥 بيانات العيادة</h3></div>
+          <div className="card-header"><h3>🏥 بيانات المركز</h3></div>
           <div className="card-body">
             <div className="form-row">
-              <TF label="اسم العيادة" value={form.clinicName} onChange={v=>f('clinicName',v)}/>
+              <TF label="اسم المركز" value={form.clinicName} onChange={v=>f('clinicName',v)}/>
               <TF label="شعار العيادة (Slogan)" value={form.clinicSlogan} onChange={v=>f('clinicSlogan',v)}/>
             </div>
             <div className="form-row">
@@ -7649,7 +7740,7 @@ function SettingsPage(){
             <div className="card-header"><h3>♻️ استعادة / دمج من نسخة احتياطية (CSV أو JSON)</h3></div>
             <div className="card-body">
               <div className="alert alert-success" style={{marginBottom:16}}>
-                استعادة آمنة من ملف <b>MotionClinic_FULL</b> (CSV) أو <b>MotionClinic_Backup</b> (JSON). يُضيف السجلات الناقصة ويُحدّث الأحدث فقط حسب وقت التعديل —
+                استعادة آمنة من ملف <b>MotionCenter_FULL</b> (CSV) أو <b>MotionCenter_Backup</b> (JSON) — والملفات القديمة MotionClinic_* أيضاً. يُضيف السجلات الناقصة ويُحدّث الأحدث فقط حسب وقت التعديل —
                 <b> بلا حذف، بلا تكرار، وبلا طمس بيانات أحدث</b>. ثم يُرفع الجديد تلقائياً إلى السحابة لكل الأجهزة.
                 <br/><b>ملاحظة:</b> ملف JSON أشمل ويتضمن السجلات الطبية والملاحظات والكادر ومكتبة التمارين (غير الموجودة في CSV).
               </div>
@@ -7712,7 +7803,7 @@ function SettingsPage(){
                 const blob=new Blob([BOM+parts.join(SEP2)],{type:'text/csv;charset=utf-8'});
                 const a=document.createElement('a');
                 a.href=URL.createObjectURL(blob);
-                a.download='MotionClinic_FULL_'+new Date().toISOString().slice(0,10)+'.csv';
+                a.download='MotionCenter_FULL_'+new Date().toISOString().slice(0,10)+'.csv';
                 a.click();
               }}>📊 تحميل ملف CSV الشامل (كل البيانات)</button>
               <div style={{fontSize:11,color:'var(--text-light)',marginTop:6,textAlign:'center'}}>
@@ -8090,7 +8181,7 @@ function SettingsPage(){
               <div style={{marginBottom:12,fontWeight:800,fontSize:14,color:'var(--primary)'}}>📋 SQL — انسخ هذا كاملاً:</div>
               <div style={{position:'relative'}}>
                 <pre style={{background:'#1e293b',color:'#e2e8f0',padding:'16px 20px',borderRadius:10,fontSize:11.5,overflow:'auto',lineHeight:1.6,direction:'ltr',textAlign:'left',maxHeight:400}}>
-{`-- Motion Clinic v7 — Supabase Tables Setup
+{`-- Motion Center v7 — Supabase Tables Setup
 -- Run this once in SQL Editor
 
 -- Key-Value store (settings, categories)
@@ -8250,7 +8341,7 @@ create policy "allow_all" on mc_staff        for all using (true) with check (tr
 create policy "allow_all" on mc_inventory    for all using (true) with check (true);
 create policy "allow_all" on mc_hep          for all using (true) with check (true);
 
-select 'Motion Clinic tables created successfully! ✅' as result;`}
+select 'Motion Center tables created successfully! ✅' as result;`}
                 </pre>
                 <button className="btn btn-sm btn-primary" style={{position:'absolute',top:10,left:10}}
                   onClick={()=>{ const sql=document.querySelector('pre').textContent; navigator.clipboard.writeText(sql).then(()=>alert('✅ تم نسخ SQL! افتح Supabase → SQL Editor والصقه')); }}>
@@ -8274,13 +8365,13 @@ select 'Motion Clinic tables created successfully! ✅' as result;`}
 // ══════════════════════════════════════════════════
 // MOTION AI — المساعد الذكي المتكامل
 // ══════════════════════════════════════════════════
-const MOTION_AI_SYSTEM = `أنت MOTION AI — المساعد الذكي المتكامل لعيادة Motion Clinic في دمشق، سوريا.
+const MOTION_AI_SYSTEM = `أنت MOTION AI — المساعد الذكي المتكامل لمركز Motion Center في دمشق، سوريا.
 تم تصميمك خصيصاً من قِبل د. يامن نزية للعمل كمساعد طبي وإداري واستشاري متخصص في العلاج الفيزيائي وإعادة التأهيل.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🏥 هوية العيادة
 ━━━━━━━━━━━━━━━━━━━━━━━━
-الاسم: Motion Clinic — عيادة الحركة | الموقع: دمشق، سوريا
+الاسم: Motion Center — مركز الحركة | الموقع: دمشق، سوريا
 المؤسس: د. يامن نزية | معالج فيزيائي متخصص
 التخصصات: علاج فيزيائي، تأهيل رياضي، تأهيل عصبي، تغذية علاجية، InBody
 
@@ -9224,7 +9315,7 @@ function InstallButton() {
                     لم يتمكّن المتصفح من فتح نافذة التثبيت تلقائياً. يمكنك التثبيت يدوياً:
                   </div>
                   <ol style={{lineHeight:2.1, fontWeight:700, paddingInlineStart:20}}>
-                    <li><strong>Chrome / Edge (كمبيوتر):</strong> اضغط أيقونة التثبيت ⊕ في شريط العنوان، أو قائمة ⋮ ← «تثبيت Motion Clinic».</li>
+                    <li><strong>Chrome / Edge (كمبيوتر):</strong> اضغط أيقونة التثبيت ⊕ في شريط العنوان، أو قائمة ⋮ ← «تثبيت Motion Center».</li>
                     <li><strong>Chrome (أندرويد):</strong> قائمة ⋮ ← «إضافة إلى الشاشة الرئيسية».</li>
                     <li>تأكّد أن الصفحة مفتوحة عبر رابط <strong>https</strong> وليس ملفاً محلياً.</li>
                   </ol>
@@ -9402,7 +9493,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
         <div className="sidebar-header">
           <div className="logo-box">{logo}</div>
           <div className="logo-text">
-            <strong>{settings.clinicName||'Motion Clinic'}</strong>
+            <strong>{settings.clinicName||'Motion Center'}</strong>
             <span>{settings.clinicSlogan||'الحركة طريق الصحة'}</span>
           </div>
         </div>
@@ -9432,7 +9523,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
             onClick={async()=>{ if(confirm('تسجيل الخروج من النظام؟')){ try{ await _supaClient.auth.signOut(); }catch(e){} } }}
             style={{width:'100%',padding:'8px',marginBottom:10,background:'rgba(220,38,38,0.15)',border:'1px solid rgba(220,38,38,0.4)',color:'#fca5a5',borderRadius:8,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:12,fontWeight:700}}
           >🚪 تسجيل الخروج</button>
-          Motion Clinic v9 Pro — Realtime<br/>
+          Motion Center v9 Pro — Realtime<br/>
           {settings.phone&&<span>{settings.phone}</span>}
         </div>
       </aside>
@@ -9442,7 +9533,7 @@ function AppShell({currentPage, setCurrentPage, patientId, setPatientId, mobileO
         <header className="topbar">
           <button className="mobile-toggle" onClick={()=>setMobileOpen(o=>!o)}>☰</button>
           <div className="breadcrumb">
-            <span>Motion Clinic</span>
+            <span>Motion Center</span>
             <span className="breadcrumb-sep">›</span>
             <strong>{PAGE_LABELS[currentPage]||currentPage}</strong>
             {currentPage==='patient'&&patientId&&(
@@ -9615,13 +9706,13 @@ function OpsReportPage(){
 h2{font-size:16px;color:#0B3D5C;border-right:4px solid #B8893A;padding-right:10px;margin:22px 0 10px}
 table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px solid #e2e8f0;font-size:13px;text-align:right}th{background:#0B3D5C;color:#fff}
 .foot{margin-top:26px;text-align:center;font-size:12px;color:#94a3b8}@media print{.noprint{display:none}}</style></head><body>
-<div class="h"><h1>🗓️ التقرير ال${label} — ${settings.clinicName||'Motion Clinic'}</h1><p>${new Date().toLocaleDateString('ar-EG',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</p></div>
+<div class="h"><h1>🗓️ التقرير ال${label} — ${settings.clinicName||'Motion Center'}</h1><p>${new Date().toLocaleDateString('ar-EG',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</p></div>
 <div class="cards">${kpiHtml}</div>
 <h2>الأداء حسب المعالج</h2>
 <table><thead><tr><th>المعالج</th><th>المواعيد</th><th>حضروا</th><th>لم يحضروا</th><th>نسبة الحضور</th></tr></thead><tbody>${therHtml||'<tr><td colspan=5 style="text-align:center;color:#888">لا بيانات</td></tr>'}</tbody></table>
 <h2>إنجاز مهام الكادر (${label})</h2>
 <table><thead><tr><th>الدور</th><th>المنجز</th><th>النسبة</th></tr></thead><tbody>${perfHtml}</tbody></table>
-<div class="foot">${settings.clinicName||'Motion Clinic'} — ${settings.phone||''}</div>
+<div class="foot">${settings.clinicName||'Motion Center'} — ${settings.phone||''}</div>
 <div class="noprint" style="text-align:center;margin-top:20px"><button onclick="window.print()" style="background:#1B7A7E;color:#fff;border:0;padding:12px 30px;border-radius:10px;font-family:Cairo;font-size:15px;font-weight:700;cursor:pointer">🖨️ طباعة / PDF</button></div>
 </body></html>`); w.document.close();
   };
@@ -9813,8 +9904,11 @@ function TherapistTrackingPage(){
     const needFollow = mine.filter(p=>!futureApt.has(String(p.id)))
       .map(p=>({...p, last:lastSes[p.id]||'', days: lastSes[p.id] ? Math.floor((Date.now()-new Date(lastSes[p.id]).getTime())/86400000) : null}))
       .sort((a,b)=>(b.days??9999)-(a.days??9999));
-    const wApts = appointments.filter(a=>a.date>=wk.from && a.date<=wk.to && same(aptTherName(a,patients), ther))
+    const wApts = appointments.filter(a=>a.date>=wk.from && a.date<=wk.to && (same(aptTherName(a,patients), ther) || same(a.assistant, ther)))
+      .map(a=>({...a, _asst: !same(aptTherName(a,patients), ther)}))
       .sort((a,b)=>(a.date+(a.time||'')).localeCompare(b.date+(b.time||'')));
+    const asstDone = wApts.filter(a=>a._asst && a.status==='completed');
+    const asstValue = asstDone.reduce((t,a)=>t+aptCost(a,services),0);
     const done = wApts.filter(a=>a.status==='completed').length;
     const missed = wApts.filter(a=>a.status==='missed').length;
     const cancelled = wApts.filter(a=>a.status==='cancelled').length;
@@ -9823,11 +9917,11 @@ function TherapistTrackingPage(){
     const capacityMin = 6 * (SLOT_DAY_END-SLOT_DAY_START);           // 6 أيام عمل (بدون الجمعة)
     const wSes = (sessions||[]).filter(s=>s.date>=wk.from && s.date<=wk.to && same(s.therapistName, ther));
     const collected = wSes.reduce((t,s)=>t+(Number(s.paid)||0),0);
-    const expected = wSes.filter(s=>!s.isFree).reduce((t,s)=>t+(Number(((services||[]).find(v=>v.name===s.type)||{}).price)||0),0);
-    const undoc = wApts.filter(a=>a.status==='completed' && a.date<=todayStr && !isAptDocumented(a,sessions,records));
+    const expected = wApts.filter(a=>!a._asst && a.status==='completed').reduce((t,a)=>t+aptCost(a,services),0);   // قيمة جلساته من المواعيد
+    const undoc = wApts.filter(a=>!a._asst && a.status==='completed' && a.date<=todayStr && !isAptDocumented(a,sessions,records));
     const attRate = (done+missed)>0 ? Math.round(done/(done+missed)*100) : null;
     return {ther, mine, active, needFollow, wApts, done, missed, cancelled, upcoming, bookedMin, occupancy: Math.round(bookedMin/capacityMin*100),
-            wSes, collected, expected, undoc, attRate};
+            wSes, collected, expected, undoc, attRate, asstDone, asstValue};
   };
   const all = therapists.map(statsFor);
   const st = all.find(x=>same(x.ther, sel)) || (sel ? statsFor(sel) : null);
@@ -9838,7 +9932,7 @@ function TherapistTrackingPage(){
   const wa = (p)=>{
     let ph=String(p.phone||'').replace(/[^0-9]/g,''); if(ph.startsWith('0')) ph='963'+ph.slice(1);
     if(!ph){ alert('لا يوجد رقم هاتف لهذا المريض.'); return; }
-    const msg=`مرحباً ${p.name} 🌿\nنتمنى أن تكون بخير. حان موعد متابعة جلساتك مع ${sel} في ${settings.clinicName||'Motion Clinic'}.\nيسعدنا حجز موعدك القادم — راسلنا بالوقت المناسب لك 🙏`;
+    const msg=`مرحباً ${p.name} 🌿\nنتمنى أن تكون بخير. حان موعد متابعة جلساتك مع ${sel} في ${settings.clinicName||'Motion Center'}.\nيسعدنا حجز موعدك القادم — راسلنا بالوقت المناسب لك 🙏`;
     window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg),'_blank');
   };
 
@@ -9855,7 +9949,7 @@ function TherapistTrackingPage(){
 h2{font-size:14.5px;color:#0B3D5C;border-right:4px solid #B8893A;padding-right:10px;margin:18px 0 8px}
 table{width:100%;border-collapse:collapse}td,th{padding:6px 9px;border:1px solid #e2e8f0;font-size:12px;text-align:right}th{background:#f8fafc}
 .foot{margin-top:22px;text-align:center;font-size:11.5px;color:#94a3b8}</style></head><body>
-<div class="h"><h1>🩺 التقرير الأسبوعي — ${esc(st.ther)}</h1><p>${esc(settings.clinicName||'Motion Clinic')} • الأسبوع ${wk.from} → ${wk.to} • صدر ${new Date().toLocaleDateString('ar-EG')}</p></div>
+<div class="h"><h1>🩺 التقرير الأسبوعي — ${esc(st.ther)}</h1><p>${esc(settings.clinicName||'Motion Center')} • الأسبوع ${wk.from} → ${wk.to} • صدر ${new Date().toLocaleDateString('ar-EG')}</p></div>
 <div class="cards">
 <div class="c"><div class="v">${st.active.length}</div><div class="l">مرضى نشطون</div></div>
 <div class="c"><div class="v">${st.wApts.length}</div><div class="l">مواعيد الأسبوع</div></div>
@@ -9865,10 +9959,11 @@ table{width:100%;border-collapse:collapse}td,th{padding:6px 9px;border:1px solid
 <h2>الملخّص</h2><table>
 ${tr(['حضر', st.done])}${tr(['غاب', st.missed])}${tr(['ملغى', st.cancelled])}${tr(['قادم / لم يُحسم', st.upcoming])}
 ${tr(['جلسات مسجّلة', st.wSes.length])}${tr(['ساعات محجوزة', (st.bookedMin/60).toFixed(1)])}${tr(['مواعيد بحاجة توثيق', st.undoc.length])}
-${isAdminUser()?tr(['القيمة حسب الأسعار', fmt(st.expected)+' '+cur])+tr(['المحصّل من الجلسات', fmt(st.collected)+' '+cur]):''}
+${tr(['جلسات كمساعد', st.asstDone.length])}
+${isAdminUser()?tr(['قيمة جلساته (تكلفة المواعيد)', fmt(st.expected)+' '+cur])+tr(['قيمة الجلسات التي ساعد فيها', fmt(st.asstValue)+' '+cur])+tr(['المحصّل من الجلسات', fmt(st.collected)+' '+cur]):''}
 </table>
-<h2>مواعيد الأسبوع</h2><table><tr><th>اليوم</th><th>الوقت</th><th>المريض</th><th>الخدمة</th><th>الحالة</th></tr>
-${st.wApts.map(a=>tr([WEEK_DAYS_AR[wk.days.indexOf(a.date)]+' '+a.date, a.time||'', esc(pn(a)), esc(a.service||'—'), stLabel[a.status]||a.status])).join('')||'<tr><td colspan=5 style="text-align:center;color:#888">لا مواعيد</td></tr>'}
+<h2>مواعيد الأسبوع</h2><table><tr><th>اليوم</th><th>الوقت</th><th>المريض</th><th>الخدمة</th><th>الدور</th><th>الحالة</th>${isAdminUser()?'<th>التكلفة</th>':''}</tr>
+${st.wApts.map(a=>tr([WEEK_DAYS_AR[wk.days.indexOf(a.date)]+' '+a.date, a.time||'', esc(pn(a)), esc(a.service||'—'), a._asst?'مساعد':'معالج'+(a.assistant?' (مع '+esc(a.assistant)+')':''), stLabel[a.status]||a.status, ...(isAdminUser()?[aptHasCost(a)?fmt(aptCost(a,services)):'—']:[])])).join('')||'<tr><td colspan=7 style="text-align:center;color:#888">لا مواعيد</td></tr>'}
 </table>
 <h2>المرضى النشطون (${st.active.length})</h2><table><tr><th>المريض</th><th>الهاتف</th><th>آخر جلسة</th><th>موعد قادم</th></tr>
 ${st.active.map(p=>tr([esc(p.name), esc(p.phone||'—'), lastSes[p.id]||'—', futureApt.has(String(p.id))?'✔':'—'])).join('')||'<tr><td colspan=4 style="text-align:center;color:#888">—</td></tr>'}
@@ -9878,7 +9973,7 @@ ${st.needFollow.map(p=>tr([esc(p.name), esc(p.phone||'—'), p.last ? p.last+' (
 </table>
 ${st.undoc.length?`<h2>مواعيد حضرت بلا توثيق (${st.undoc.length})</h2><table><tr><th>التاريخ</th><th>المريض</th><th>الخدمة</th><th>المطلوب</th></tr>
 ${st.undoc.map(a=>tr([a.date, esc(pn(a)), esc(a.service||'—'), docKindFor(a.service)==='record'?'سجل طبي':'متابعة جلسة'])).join('')}</table>`:''}
-<div class="foot">Motion Clinic — تقرير آلي</div>
+<div class="foot">Motion Center — تقرير آلي</div>
 <script>setTimeout(()=>window.print(),600)<\/script></body></html>`);
     w.document.close();
   };
@@ -9902,15 +9997,15 @@ ${st.undoc.map(a=>tr([a.date, esc(pn(a)), esc(a.service||'—'), docKindFor(a.se
         <div className="card-header"><h3>📊 مقارنة المعالجين هذا الأسبوع</h3></div>
         <div style={{overflowX:'auto'}}>
           <table className="data-table">
-            <thead><tr><th>المعالج</th><th>مرضى نشطون</th><th>مواعيد</th><th>حضر</th><th>غاب/ألغى</th><th>نسبة الحضور</th><th>جلسات</th><th>امتلاء</th><th>بلا توثيق</th>{isAdminUser()&&<th>القيمة</th>}</tr></thead>
+            <thead><tr><th>المعالج</th><th>مرضى نشطون</th><th>مواعيد</th><th>حضر</th><th>غاب/ألغى</th><th>نسبة الحضور</th><th>جلسات</th><th>كمساعد</th><th>امتلاء</th><th>بلا توثيق</th>{isAdminUser()&&<th>القيمة</th>}</tr></thead>
             <tbody>
               {all.map(x=>(
                 <tr key={x.ther} onClick={()=>setSel(x.ther)} style={{cursor:'pointer',background:same(x.ther,sel)?'var(--primary-bg)':undefined}}>
                   <td style={{fontWeight:800}}>{x.ther}</td><td>{x.active.length}</td><td>{x.wApts.length}</td>
                   <td style={{color:'#059669',fontWeight:700}}>{x.done}</td><td style={{color:'#dc2626',fontWeight:700}}>{x.missed+x.cancelled}</td>
-                  <td>{x.attRate==null?'—':x.attRate+'%'}</td><td>{x.wSes.length}</td><td>{x.occupancy}%</td>
+                  <td>{x.attRate==null?'—':x.attRate+'%'}</td><td>{x.wSes.length}</td><td>{x.asstDone.length||'—'}</td><td>{x.occupancy}%</td>
                   <td style={{color:x.undoc.length?'var(--orange)':'var(--text-light)',fontWeight:700}}>{x.undoc.length}</td>
-                  {isAdminUser()&&<td>{fmt(x.expected)} {cur}</td>}
+                  {isAdminUser()&&<td>{fmt(x.expected)} {cur}{x.asstValue?<span style={{fontSize:11,color:'var(--text-light)'}}> +{fmt(x.asstValue)} كمساعد</span>:''}</td>}
                 </tr>
               ))}
             </tbody>
@@ -9930,7 +10025,7 @@ ${st.undoc.map(a=>tr([a.date, esc(pn(a)), esc(a.service||'—'), docKindFor(a.se
         <div className="stats-grid" style={{gridTemplateColumns:'repeat(4,1fr)'}}>
           {[
             ['👥 مرضى نشطون', st.active.length, 'var(--primary)', 'من '+st.mine.length+' مسؤول عنهم'],
-            ['📅 مواعيد الأسبوع', st.wApts.length, 'var(--blue)', 'حضر '+st.done+' · غاب '+st.missed+' · ألغى '+st.cancelled],
+            ['📅 مواعيد الأسبوع', st.wApts.length, 'var(--blue)', 'حضر '+st.done+' · غاب '+st.missed+' · ألغى '+st.cancelled+(st.asstDone.length?' · كمساعد '+st.asstDone.length:'')],
             ['✅ نسبة الحضور', st.attRate==null?'—':st.attRate+'%', 'var(--green)', 'جلسات مسجّلة: '+st.wSes.length],
             ['⏱️ امتلاء الجدول', st.occupancy+'%', 'var(--accent)', (st.bookedMin/60).toFixed(1)+' ساعة محجوزة'],
           ].map(([l,v,c,sub],i)=>(
@@ -9942,7 +10037,7 @@ ${st.undoc.map(a=>tr([a.date, esc(pn(a)), esc(a.service||'—'), docKindFor(a.se
         </div>
         {isAdminUser() && (
           <div className="stats-grid" style={{gridTemplateColumns:'repeat(2,1fr)'}}>
-            <div className="stat-card"><div className="stat-content"><h3 style={{color:'var(--purple)',fontSize:18}}>{fmt(st.expected)} {cur}</h3><p>💼 قيمة الجلسات حسب الأسعار</p></div></div>
+            <div className="stat-card"><div className="stat-content"><h3 style={{color:'var(--purple)',fontSize:18}}>{fmt(st.expected)} {cur}</h3><p>💼 قيمة جلساته (من تكلفة المواعيد)</p>{st.asstValue>0&&<span style={{fontSize:11,color:'var(--text-light)',fontWeight:700}}>+ {fmt(st.asstValue)} {cur} كمساعد في {st.asstDone.length} جلسة</span>}</div></div>
             <div className="stat-card"><div className="stat-content"><h3 style={{color:'var(--green)',fontSize:18}}>{fmt(st.collected)} {cur}</h3><p>💰 المحصّل من جلسات الأسبوع</p></div></div>
           </div>
         )}
@@ -9969,7 +10064,7 @@ ${st.undoc.map(a=>tr([a.date, esc(pn(a)), esc(a.service||'—'), docKindFor(a.se
                         <td key={d} style={{padding:4,border:'1px solid var(--border)',verticalAlign:'top',background:covered?'#eef2ff':undefined,minWidth:96}}>
                           {cell.map(a=>(
                             <div key={a.id} title={a.service||''} style={{borderRight:'3px solid '+(stColor[a.status]||'#888'),background:(stColor[a.status]||'#888')+'14',borderRadius:6,padding:'3px 6px',marginBottom:3}}>
-                              <div style={{fontWeight:800}}>{a.time} {pn(a)}</div>
+                              <div style={{fontWeight:800}}>{a.time} {pn(a)}{a._asst && <span style={{fontSize:10,color:'#7c3aed'}}> (مساعد)</span>}</div>
                               <div style={{fontSize:10.5,color:'var(--text-light)'}}>{a.service||'—'} · {stLabel[a.status]||a.status}</div>
                             </div>
                           ))}
@@ -10478,7 +10573,7 @@ function UserManagementPage(){
 }
 
 function credentialsText(email, password){
-  return `بيانات دخولك إلى نظام العيادة 🏥\nالرابط: ${location.origin + location.pathname}\nالبريد: ${email}\nكلمة المرور: ${password}\n\nيُنصح بتغيير كلمة المرور بعد أول دخول من «🔑 كلمة المرور» أسفل القائمة.`;
+  return `بيانات دخولك إلى نظام المركز 🏥\nالرابط: ${location.origin + location.pathname}\nالبريد: ${email}\nكلمة المرور: ${password}\n\nيُنصح بتغيير كلمة المرور بعد أول دخول من «🔑 كلمة المرور» أسفل القائمة.`;
 }
 function CredentialsResult({email, password, phone, onClose}){
   const text = credentialsText(email, password);
@@ -10720,7 +10815,7 @@ function ServerBackupsCard(){
       const j = await readServerBackup(row.file);
       const blob = new Blob([JSON.stringify(j, null, 1)], {type:'application/json'});
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-      a.download = 'MotionClinic_server_backup_' + (j.day||'') + '.json'; a.click();
+      a.download = 'MotionCenter_server_backup_' + (j.day||'') + '.json'; a.click();
     }catch(e){ alert('تعذّر التنزيل: '+e.message); }
     setBusy('');
   };
@@ -10953,8 +11048,13 @@ function WebCodes(){
   const load = async()=>{ const {data,error} = await _supaClient.rpc('mc_portal_list'); if(error) setErr(error.message); else { setErr(''); setRows(data||[]); } };
   useEffect(()=>{ load(); }, []);
   const pMap = Object.fromEntries(patients.map(p=>[p.id,p]));
+  const [show,setShow] = useState(50);
+  const [onlyNo,setOnlyNo] = useState(false);
   const qq = q.trim();
-  const found = qq ? patients.filter(p=>(p.name||'').includes(qq) || (p.phone||'').includes(qq) || String(p.id).includes(qq)).slice(0,8) : [];
+  const accIds = new Set(rows.map(r=>r.patient_id));
+  const allSorted = [...patients].filter(p=>!p.deleted).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ar'));
+  const filtered = allSorted.filter(p=> (!qq || (p.name||'').includes(qq) || (p.phone||'').includes(qq) || String(p.id).includes(qq)) && (!onlyNo || !accIds.has(p.id)));
+  const found = filtered.slice(0, show);
   const issue = async(p)=>{ const c = await issuePortalCode(p); if(c){ setRes({patient:p, code:c}); load(); } };
   const revoke = async(id)=>{
     if(!confirm('إلغاء وصول هذا المريض إلى الموقع؟ لن يستطيع الدخول حتى يُصدر له رمز جديد.')) return;
@@ -10963,16 +11063,25 @@ function WebCodes(){
   return(
     <div className="grid-2">
       <div className="card">
-        <div className="card-header"><h3>➕ إصدار رمز لمريض</h3></div>
+        <div className="card-header"><h3>👥 كل المرضى ({filtered.length} من {allSorted.length})</h3></div>
         <div className="card-body">
-          <input className="input" placeholder="🔎 ابحث بالاسم أو الهاتف أو الرقم..." value={q} onChange={e=>setQ(e.target.value)} style={{width:'100%',marginBottom:10}}/>
-          {found.map(p=>(
-            <div key={p.id} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0',borderBottom:'1px solid var(--border)'}}>
-              <div style={{flex:1}}><strong>{p.name}</strong> <span style={{fontSize:12,color:'var(--text-light)'}} dir="ltr">{p.phone}</span></div>
-              <button className="btn btn-sm btn-accent" onClick={()=>issue(p)}>🔑 إصدار رمز</button>
-            </div>
-          ))}
-          {qq && found.length===0 && <div style={{fontSize:13,color:'var(--text-light)'}}>لا نتائج.</div>}
+          <input className="input" placeholder="🔎 ابحث بالاسم أو الهاتف أو الرقم..." value={q} onChange={e=>{setQ(e.target.value); setShow(50);}} style={{width:'100%',marginBottom:8}}/>
+          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,marginBottom:8,cursor:'pointer'}}>
+            <input type="checkbox" checked={onlyNo} onChange={e=>{setOnlyNo(e.target.checked); setShow(50);}}/> عرض من ليس لديهم رمز فقط
+          </label>
+          <div style={{maxHeight:460,overflowY:'auto'}}>
+            {found.map(p=>(
+              <div key={p.id} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0',borderBottom:'1px solid var(--border)'}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <strong>{p.name}</strong> {accIds.has(p.id) && <span className="badge badge-green">✓ لديه رمز</span>}
+                  <div style={{fontSize:12,color:'var(--text-light)'}}><span dir="ltr">{p.phone||'—'}</span> · {p.id}</div>
+                </div>
+                <button className="btn btn-sm btn-accent" onClick={()=>issue(p)}>{accIds.has(p.id)?'🔄 رمز جديد':'🔑 إصدار رمز'}</button>
+              </div>
+            ))}
+          </div>
+          {filtered.length>found.length && <button className="btn btn-sm btn-outline" style={{width:'100%',marginTop:8}} onClick={()=>setShow(n=>n+100)}>⬇️ عرض المزيد ({filtered.length-found.length} متبقٍ)</button>}
+          {found.length===0 && <div style={{fontSize:13,color:'var(--text-light)'}}>لا نتائج.</div>}
           <div style={{fontSize:12,color:'var(--text-light)',marginTop:10}}>يمكن أيضاً إصدار الرمز من زر «🔑 رمز الموقع» داخل ملف المريض.</div>
         </div>
       </div>
@@ -11545,9 +11654,9 @@ function LoginScreen(){
           <div style={{width:64,height:64,borderRadius:16,margin:'0 auto 14px',
             background:'linear-gradient(135deg,var(--accent),#f0b840)',display:'flex',alignItems:'center',
             justifyContent:'center',fontSize:34,boxShadow:'0 8px 20px rgba(232,160,32,0.4)'}}>🏥</div>
-          <h1 style={{fontSize:20,fontWeight:900,color:'var(--primary)',margin:0}}>Motion Clinic</h1>
+          <h1 style={{fontSize:20,fontWeight:900,color:'var(--primary)',margin:0}}>Motion Center</h1>
           <p style={{fontSize:12.5,color:'var(--text-light)',marginTop:4}}>
-            سجّل الدخول للوصول إلى نظام العيادة
+            سجّل الدخول للوصول إلى نظام المركز
           </p>
         </div>
 
@@ -11577,7 +11686,7 @@ function LoginScreen(){
         </form>
 
         <div style={{textAlign:'center',marginTop:16,fontSize:12,color:'var(--text-light)',lineHeight:1.8}}>
-          ليس لديك حساب؟ لإنشاء حساب موظف جديد تواصل مع إدارة العيادة.
+          ليس لديك حساب؟ لإنشاء حساب موظف جديد تواصل مع إدارة المركز.
         </div>
       </div>
     </div>
@@ -11665,7 +11774,7 @@ function RootApp(){
         <div style={{fontSize:40}}>🚫</div>
         <div style={{fontSize:16,fontWeight:800}}>حسابك غير مُفعَّل</div>
         <div style={{fontSize:13,opacity:0.85,maxWidth:360,lineHeight:1.8}}>
-          تواصل مع إدارة العيادة لتفعيل حسابك أو لمعرفة السبب.
+          تواصل مع إدارة المركز لتفعيل حسابك أو لمعرفة السبب.
         </div>
         <button className="btn" style={{marginTop:10}} onClick={()=>_supaClient.auth.signOut()}>
           🚪 تسجيل الخروج
@@ -11720,8 +11829,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(<AppErrorBoundary><R
   const _here  = location.origin + location.pathname;                 // مثال: https://user.github.io/Repo/index.html
   const _scope = location.origin + location.pathname.slice(0, location.pathname.lastIndexOf('/') + 1);
   const manifest = {
-    name: 'Motion Clinic — عيادة الحركة',
-    short_name: 'Motion Clinic',
+    name: 'Motion Center — مركز الحركة',
+    short_name: 'Motion Center',
     description: 'نظام إدارة عيادة العلاج الطبيعي والتأهيل',
     id: _here,
     start_url: _here,
