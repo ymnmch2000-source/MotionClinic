@@ -565,6 +565,27 @@ function genPassword(){
 // (انظر canSeeFinance أدناه) الذي تفرضه أيضاً سياسات RLS في Supabase — وليس مجرد واجهة.
 const STAFF_MODE = !!(window.__MC_STAFF);
 
+// ── أمان: تنقية النصوص + نوافذ طباعة محمية ──
+// escHtml: يحوّل أي نص إلى نص آمن قبل وضعه داخل HTML.
+const escHtml = (v) => String(v==null?'':v)
+  .split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;')
+  .split('\x22').join('&quot;').split('\x27').join('&#39;');
+// writePrintDoc: يكتب مستند الطباعة مع سياسة CSP تمنع تشغيل أي كود محقون
+// (مثلاً اسم مريض خبيث من حجز الموقع). أزرار الطباعة تُربط بسكربت موثوق (nonce).
+const writePrintDoc = (w, html) => {
+  if(!w) return;
+  const n = Math.random().toString(36).slice(2)+Date.now().toString(36);
+  let h = String(html||'')
+    .split('onclick="window.print()"').join('data-mc-print="1"')
+    .split('<script>').join('<script nonce="'+n+'">');
+  const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \x27self\x27 data: blob: https:; script-src \x27nonce-'+n+'\x27; style-src \x27unsafe-inline\x27 https:; object-src \x27none\x27; base-uri \x27none\x27; form-action \x27none\x27">';
+  const boot = '<script nonce="'+n+'">document.addEventListener(\x27click\x27,function(e){var b=e.target.closest&&e.target.closest(\x27[data-mc-print]\x27);if(b)window.print();});<\/script>';
+  const i = h.indexOf('<head>');
+  h = i>=0 ? h.slice(0,i+6)+csp+boot+h.slice(i+6) : csp+boot+h;
+  try{ w.opener = null; }catch(_){}
+  w.document.write(h);
+};
+
 // ── الدور الحقيقي لكل مستخدم (يُضبط من RootApp بعد جلب صف profiles) ──
 // 'admin' | 'reception' | 'therapist' | null (لم يُحمَّل بعد)
 window.__MC_ROLE = null;
@@ -767,12 +788,20 @@ const sb = {
   async uploadFile(path, file) {
     const { error } = await _supaClient.storage.from(this.BUCKET).upload(path, file, { upsert: true, contentType: file.type || 'application/octet-stream' });
     if (error) throw new Error(error.message);
-    const { data } = _supaClient.storage.from(this.BUCKET).getPublicUrl(path);
-    return data?.publicUrl || '';
+    return 'private:' + path;   // الحاوية خاصة: لا رابط دائم، نولّد رابطاً مؤقتاً عند العرض
   },
-  fileUrl(path) {
-    const { data } = _supaClient.storage.from(this.BUCKET).getPublicUrl(path);
-    return data?.publicUrl || '';
+  // رابط مؤقت (ساعة افتراضياً) لملف في الحاوية الخاصة
+  async fileUrl(path, secs = 3600) {
+    const { data, error } = await _supaClient.storage.from(this.BUCKET).createSignedUrl(path, secs);
+    if (error) throw new Error(error.message);
+    return data?.signedUrl || '';
+  },
+  async fileUrls(paths, secs = 3600) {
+    if (!paths.length) return {};
+    const { data, error } = await _supaClient.storage.from(this.BUCKET).createSignedUrls(paths, secs);
+    if (error) throw new Error(error.message);
+    const out = {}; (data||[]).forEach(d => { if (d && d.signedUrl) out[d.path] = d.signedUrl; });
+    return out;
   },
   async removeFile(path) {
     const { error } = await _supaClient.storage.from(this.BUCKET).remove([path]);
@@ -1716,8 +1745,9 @@ function ClinicProvider({ children }) {
   const updateSettings = (d) => {
     const next = { ...settings, ...d };
     setSettings(next);
-    showToast('تم حفظ الإعدادات ✓');
-    pushKV('settings', next);
+    // الإعدادات العامة يرفعها المدير فقط (سياسة mc_kv في قاعدة البيانات)
+    if (isAdminUser()) { showToast('تم حفظ الإعدادات ✓'); pushKV('settings', next); }
+    else showToast('تم الحفظ على هذا الجهاز فقط — إعدادات العيادة العامة يغيّرها المدير','info');
   };
 
   // ── تذكير النسخ الاحتياطي الأسبوعي ──
@@ -1895,7 +1925,7 @@ function ClinicProvider({ children }) {
         catch (e) { bad += Math.min(50, list.length - i); lastErr = (e && e.message) || String(e); }
       }
     }
-    try { await sb.upsertKV('settings', settings); await sb.upsertKV('categories', categories); } catch (e) {}
+    if (isAdminUser()) { try { await sb.upsertKV('settings', settings); await sb.upsertKV('categories', categories); } catch (e) {} }
     setSyncError(bad ? lastErr : '');
     setSyncStatus(bad ? 'error' : 'online');
     if (!bad) setLastSync(new Date().toISOString());
@@ -2391,7 +2421,7 @@ function Dashboard({navigate}){
     const w=window.open('','_blank'); if(!w){alert('فعّل النوافذ المنبثقة.');return;}
     const card=(v,l,c)=>`<div class="c"><div class="v" style="color:${c}">${v}</div><div class="l">${l}</div></div>`;
     const srcTr=srcRows.map(([s,o])=>`<tr><td>${s}</td><td style="text-align:center">${o.count}</td><td style="text-align:left;font-weight:700;color:#059669">${fmt(o.rev)} ${cur}</td><td style="text-align:left">${o.count>0?fmt(Math.round(o.rev/o.count)):0} ${cur}</td></tr>`).join('');
-    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير المالك</title>
+    writePrintDoc(w,`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير المالك</title>
 <style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:30px;max-width:840px;margin:auto;color:#1e293b}
 .h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:24px;border-radius:14px;margin-bottom:20px}.h h1{font-size:22px}.h p{opacity:.9;font-size:13px;margin-top:4px}
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}.c{border:1px solid #e2e8f0;border-radius:10px;padding:14px;text-align:center}.c .v{font-size:19px;font-weight:800}.c .l{font-size:11px;color:#64748b;margin-top:3px}
@@ -2877,10 +2907,24 @@ function FileAttachments({patient}){
     setTimeout(()=>setMsg(''),3000);
   };
 
+  // روابط مؤقتة للمعاينة (الحاوية خاصة — لا يفتح الملف إلا مستخدم مفعّل)
+  const [signed,setSigned] = useState({});
+  const uploadedPaths = list.filter(x=>!x.pending && x.path).map(x=>x.path).join('|');
+  useEffect(()=>{
+    let off = false;
+    const ps = uploadedPaths ? uploadedPaths.split('|') : [];
+    if(!ps.length || !navigator.onLine) return;
+    sb.fileUrls(ps).then(m=>{ if(!off) setSigned(m); }).catch(()=>{});
+    return ()=>{ off = true; };
+  },[uploadedPaths]);
   const openFile = async (m)=>{
-    if(m.url){ window.open(m.url,'_blank'); return; }
-    try{ const blob = await idbGet(m.path, IDB_FILES); if(blob){ window.open(URL.createObjectURL(blob),'_blank'); return; } }catch(e){}
-    alert('الملف غير متاح دون اتصال على هذا الجهاز.');
+    const w = window.open('','_blank');   // تُفتح فوراً حتى لا يحظرها المتصفح
+    try{ const blob = await idbGet(m.path, IDB_FILES); if(blob){ const u=URL.createObjectURL(blob); if(w) w.location.href=u; else window.open(u,'_blank'); return; } }catch(e){}
+    if(!m.pending && m.path){
+      try{ const u = await sb.fileUrl(m.path, 600); if(u){ if(w) w.location.href=u; else window.open(u,'_blank'); return; } }catch(e){}
+    }
+    if(w) w.close();
+    alert('الملف غير متاح حالياً (تحقق من الاتصال أو من صلاحية حسابك).');
   };
   const retry = async (m)=>{
     setBusy(true);
@@ -2916,8 +2960,8 @@ function FileAttachments({patient}){
             {list.map(m=>(
               <div key={m.path} style={{border:'1px solid var(--border)',borderRadius:10,padding:10,background:'var(--surface)'}}>
                 <div onClick={()=>openFile(m)} style={{cursor:'pointer',textAlign:'center'}}>
-                  {m.type&&m.type.startsWith('image')&&m.url
-                    ? <img src={m.url} alt={m.name} style={{width:'100%',height:90,objectFit:'cover',borderRadius:6}}/>
+                  {m.type&&m.type.startsWith('image')&&signed[m.path]
+                    ? <img src={signed[m.path]} alt={m.name} style={{width:'100%',height:90,objectFit:'cover',borderRadius:6}}/>
                     : <div style={{fontSize:38,padding:'14px 0'}}>{fileIcon(m.type)}</div>}
                   <div style={{fontSize:12,fontWeight:700,marginTop:6,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={m.name}>{m.name}</div>
                   <div style={{fontSize:11,color:'var(--text-light)'}}>{human(m.size)} · {(m.uploadedAt||'').slice(0,10)}</div>
@@ -4086,7 +4130,7 @@ function AppointmentModal({patientId, patient, appointment, onClose}){
               <div style={{width:'100%'}}>
                 <div style={{fontWeight:800,marginBottom:4}}>⛔ لا يمكن الحجز — المعالج مشغول</div>
                 <div style={{fontSize:13}}>
-                  {conflict.x._who || aptTherName(form,patients)} لديه موعد مع <strong>{xName}</strong> ({conflict.x.service||'—'}) من {fromMin(conflict.x._start)} إلى {fromMin(conflict.x._end)}.
+                  {conflict.x._who || aptTherName(form,patients)} لديه موعد مع <strong>{xName}</strong> ({conflict.x.service||'—'}) من {fromMin(conflict.x._start)} إلى {fromMin(conflict.x._end)}.{(isWebBooking(conflict.x)&&conflict.x.status==='pending')?' (حجز من الموقع بانتظار الموافقة)':''}
                 </div>
                 {conflict.slots.length>0 ? (
                   <div style={{marginTop:8}}>
@@ -4691,7 +4735,7 @@ ${forPrint?'<div class="noprint" style="text-align:center;margin:18px"><button o
   const openPatientCard = () => {
     const w = window.open('','_blank');
     if(!w){ alert('فعّل النوافذ المنبثقة لعرض البطاقة.'); return; }
-    w.document.write(buildCardHTML(true));
+    writePrintDoc(w,buildCardHTML(true));
     w.document.close();
   };
 
@@ -5094,7 +5138,10 @@ function CalendarPage(){
   const canonTher = (name)=> staffCanon[normName(name)] || name;
   const apptTher = (a)=> canonTher(a.therapist || (patMap[a.patientId]&&patMap[a.patientId].assignedTherapist) || 'غير محدد');
   const therapists = (staff||[]).filter(s=>s.status!=='متوقف' && s.name).map(s=>s.name);
-  const shown = (a)=> !filterTherapist || apptTher(a)===filterTherapist;
+  // حجوزات الموقع لا تظهر على التقويم إلا بعد موافقة الإدارة (تبقى تحجز الوقت حتى لا يُحجز مرتين)
+  const awaitingApproval = (a)=> isWebBooking(a) && a.status==='pending';
+  const webAwaiting = appointments.filter(a=>awaitingApproval(a) && !a.deleted && (a.date||'')>=today()).length;
+  const shown = (a)=> !awaitingApproval(a) && (!filterTherapist || apptTher(a)===filterTherapist);
 
   // — مواعيد مُلغاة قادمة بحاجة لبديل: نقترح مرضى من «قائمة الانتظار» أو ممن تأخر موعدهم —
   const upcomingCancelled = appointments.filter(a=>a.status==='cancelled' && a.date>=today() && !a.replacedBy && !a.slotHandled).sort((a,b)=>a.date.localeCompare(b.date)||(a.time||'').localeCompare(b.time||''));
@@ -5170,7 +5217,9 @@ function CalendarPage(){
   return(
     <div className="page-content">
       <div className="page-header">
-        <div><h1 className="page-title">📅 التقويم</h1><p className="page-subtitle">إدارة المواعيد</p></div>
+        <div><h1 className="page-title">📅 التقويم</h1><p className="page-subtitle">إدارة المواعيد</p>
+          {webAwaiting>0 && <div className="badge badge-orange" style={{marginTop:6,display:'inline-block'}}>⏳ {webAwaiting} حجز من الموقع بانتظار الموافقة — لن يظهر على التقويم قبل التأكيد{(isAdminUser()&&!STAFF_MODE)?' (من «🌐 الموقع الرسمي»)':''}</div>}
+        </div>
         <div style={{display:'flex',gap:8}}>
           <div className="btn-group" style={{display:'flex',background:'var(--surface)',borderRadius:8,padding:3}}>
             <button className={`btn btn-sm ${view==='month'?'btn-primary':'btn-ghost'}`} onClick={()=>setView('month')}>شهري</button>
@@ -5597,8 +5646,8 @@ function FinancePage({navigate}){
   const printPeriodic = () => {
     const w = window.open('','_blank');
     if(!w){ alert('فعّل النوافذ المنبثقة لعرض التقرير.'); return; }
-    const tr = (cells)=>'<tr>'+cells.map(c=>`<td>${c}</td>`).join('')+'</tr>';
-    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير ${rKindLabel} — ${rRange.label}</title>
+    const tr = (cells)=>'<tr>'+cells.map(c=>`<td>${(typeof c==='string' && /^<b>[^<>]*<\/b>$/.test(c)) ? c : escHtml(c)}</td>`).join('')+'</tr>';
+    writePrintDoc(w,`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير ${rKindLabel} — ${rRange.label}</title>
 <style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:28px;color:#1e293b;max-width:900px;margin:auto}
 .h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:22px;border-radius:14px;margin-bottom:18px}
@@ -5659,7 +5708,7 @@ ${rInv.map(f=>tr([f.id,f.date,pname(f),f.serviceLabel||'—',fmt(f.total||0),fmt
     const w = window.open('','_blank');
     if(!w){ alert('فعّل النوافذ المنبثقة لعرض التقرير.'); return; }
     const row = (a,b,c)=>`<tr><td>${a}</td><td style="text-align:left;font-weight:700">${b}</td>${c!=null?`<td style="text-align:left;color:#64748b">${c}</td>`:''}</tr>`;
-    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير مالي — ${periodLabel}</title>
+    writePrintDoc(w,`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير مالي — ${periodLabel}</title>
 <style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:30px;color:#1e293b;max-width:820px;margin:auto}
 .h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:24px;border-radius:14px;margin-bottom:20px}
@@ -5706,7 +5755,7 @@ ${topServices.map(([s,v])=>row(s, fmt(v)+' '+cur)).join('')||'<tr><td colspan=2 
     const statusColor = f.status==='مدفوع'?'#059669':f.status==='معلق'?'#dc2626':'#d97706';
     const items = Array.isArray(f.items)&&f.items.length ? f.items : [{label:f.serviceLabel||'خدمة علاجية', qty:1, price:(f.total||0)}];
     const itemsRows = items.map((it,i)=>`<tr><td>${i+1}</td><td>${it.label||it.name||'—'}</td><td style="text-align:center">${it.qty||1}</td><td style="text-align:left">${fmt((it.price!=null?it.price:(it.amount||0)))} ${cur}</td></tr>`).join('');
-    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>فاتورة ${f.id}</title>
+    writePrintDoc(w,`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>فاتورة ${f.id}</title>
 <style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:34px;color:#1e293b;max-width:780px;margin:auto;font-size:14px}
 .top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1B7A7E;padding-bottom:18px;margin-bottom:22px}
@@ -5919,7 +5968,7 @@ th{background:#0B3D5C;color:#fff;font-size:13px}td{font-size:13px}
         const printAll = () => {
           const w=window.open('','_blank'); if(!w){alert('فعّل النوافذ المنبثقة.');return;}
           const tr=rows.map((r,i)=>`<tr><td>${i+1}</td><td>${r.name}</td><td style="text-align:center">${r.count}</td><td>${r.oldest||'—'}</td><td style="text-align:left;color:#dc2626;font-weight:700">${fmt(r.total)} ${cur}</td></tr>`).join('');
-          w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>كشف الذمم</title>
+          writePrintDoc(w,`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>كشف الذمم</title>
 <style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:30px;max-width:760px;margin:auto;color:#1e293b}
 .h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:22px;border-radius:12px;margin-bottom:18px}h1{font-size:20px}p{font-size:12px;opacity:.9;margin-top:3px}
 table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;border:1px solid #e2e8f0;font-size:13px;text-align:right}th{background:#0B3D5C;color:#fff}
@@ -6734,7 +6783,7 @@ function HEPLibraryPage({navigate}){
       '<div class="warn">⚠️ نفّذ التمارين بحسب إرشادات معالجك. توقف فوراً عند زيادة الألم.</div>'+
       '<div class="foot"><span>Motion Center © '+new Date().getFullYear()+'</span><span>'+items.length+' تمارين علاجية</span></div>'+
       '</body></html>';
-    const w=window.open('','_blank');w.document.write(html);w.document.close();setTimeout(()=>w.print(),400);
+    const w=window.open('','_blank');writePrintDoc(w,html);w.document.close();setTimeout(()=>w.print(),400);
   };
 
   return(
@@ -8744,7 +8793,7 @@ function AIAssistantPage({navigate}){
       }
       if(inTable) flushTable();
 
-      const clean = line.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\*(.*?)\*/g,'<em>$1</em>');
+      const clean = escHtml(line).replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\*(.*?)\*/g,'<em>$1</em>');
 
       if(/^#{1,3}\s/.test(line)){
         const txt = line.replace(/^#+\s/,'').replace(/\*\*/g,'');
@@ -8754,7 +8803,7 @@ function AIAssistantPage({navigate}){
       } else if(/^\d+\.\s/.test(line)){
         const num = line.match(/^(\d+)\./)[1];
         const txt = line.replace(/^\d+\.\s/,'');
-        result.push(<div key={i} style={{display:'flex',gap:8,marginBottom:4}}><span style={{minWidth:22,height:22,background:'var(--primary)',color:'#fff',borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:900,flexShrink:0}}>{num}</span><span style={{fontSize:13,color:'var(--text-dark)',paddingTop:2}} dangerouslySetInnerHTML={{__html:txt.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}}></span></div>);
+        result.push(<div key={i} style={{display:'flex',gap:8,marginBottom:4}}><span style={{minWidth:22,height:22,background:'var(--primary)',color:'#fff',borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:900,flexShrink:0}}>{num}</span><span style={{fontSize:13,color:'var(--text-dark)',paddingTop:2}} dangerouslySetInnerHTML={{__html:escHtml(txt).replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}}></span></div>);
       } else if(line.trim()){
         result.push(<p key={i} style={{fontSize:13,color:'var(--text-dark)',marginBottom:4,lineHeight:1.75}} dangerouslySetInnerHTML={{__html:clean}}></p>);
       } else {
@@ -9700,7 +9749,7 @@ function OpsReportPage(){
     const kpiHtml = KPI.map(([l,v,c])=>card(v,l.replace(/^[^ ]+ /,''),c)).join('');
     const therHtml = therRows.map(([t,o])=>`<tr><td>${t}</td><td style="text-align:center">${o.total}</td><td style="text-align:center;color:#059669">${o.att}</td><td style="text-align:center;color:#dc2626">${o.no}</td><td style="text-align:center">${o.total>0?Math.round(o.att/o.total*100):0}%</td></tr>`).join('');
     const perfHtml = rolePerf.map(r=>`<tr><td>${r.icon} ${r.label}</td><td style="text-align:center">${r.done}/${r.total}</td><td style="text-align:center;font-weight:700;color:${r.pct>=70?'#059669':'#d97706'}">${r.pct}%</td></tr>`).join('');
-    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير ${label}</title>
+    writePrintDoc(w,`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير ${label}</title>
 <style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:30px;max-width:900px;margin:auto;color:#1e293b}
 .h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:24px;border-radius:14px;margin-bottom:20px}.h h1{font-size:22px}.h p{opacity:.9;font-size:13px;margin-top:4px}
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}.c{border:1px solid #e2e8f0;border-radius:10px;padding:14px;text-align:center}.c .v{font-size:18px;font-weight:800}.c .l{font-size:11px;color:#64748b;margin-top:3px}
@@ -9942,7 +9991,7 @@ function TherapistTrackingPage(){
     const w = window.open('','_blank'); if(!w){ alert('فعّل النوافذ المنبثقة لعرض التقرير.'); return; }
     const tr = (c)=>'<tr>'+c.map(x=>`<td>${x}</td>`).join('')+'</tr>';
     const esc = (x)=>String(x==null?'':x).replace(/[<>&]/g,'');
-    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير أسبوعي — ${esc(st.ther)}</title>
+    writePrintDoc(w,`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>تقرير أسبوعي — ${esc(st.ther)}</title>
 <style>@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:Cairo,sans-serif;padding:26px;color:#1e293b;max-width:900px;margin:auto}
 .h{background:linear-gradient(135deg,#0B3D5C,#1B7A7E);color:#fff;padding:20px;border-radius:14px;margin-bottom:16px}.h h1{font-size:20px}.h p{opacity:.9;font-size:13px;margin-top:4px}
